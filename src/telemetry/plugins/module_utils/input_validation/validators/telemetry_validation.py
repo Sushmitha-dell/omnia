@@ -26,6 +26,143 @@ from ansible.module_utils.input_validation.core.validation_utils import create_e
 from ansible.module_utils.input_validation.validators import powerscale_telemetry_validation
 
 
+_SSH_OPTIONS = (
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "ConnectTimeout=10",
+    "-o", "BatchMode=yes",
+)
+_REMOTE_DIRECTORY_CHECK = 'IFS= read -r mount_path && test -d "$mount_path"'
+
+
+def _canonical_ipv4(value):
+    """Return a canonical IPv4 string, or an empty string when invalid."""
+    if not isinstance(value, str):
+        return ""
+    components = value.strip().split(".")
+    if len(components) != 4:
+        return ""
+    canonical_components = []
+    for component in components:
+        if (
+            not component
+            or len(component) > 3
+            or not component.isascii()
+            or not component.isdigit()
+        ):
+            return ""
+        number = int(component)
+        if number > 255:
+            return ""
+        canonical_components.append(str(number))
+    return ".".join(canonical_components)
+
+
+def _validated_mount_path(value):
+    """Return a safe absolute mount path, or an empty string when invalid."""
+    if not isinstance(value, str) or not value or not os.path.isabs(value):
+        return ""
+    if any(character in value for character in ("\x00", "\r", "\n")):
+        return ""
+    return value
+
+
+def _validated_project_name(value):
+    """Return a safe project name, or an empty string when invalid.
+    
+    Prevents path traversal attacks by rejecting names containing:
+    - Path separators (/, \)
+    - Parent directory references (..)
+    - Null bytes or control characters
+    - Names must be 1-80 characters
+    - Must start with alphanumeric
+    """
+    if not isinstance(value, str) or not value:
+        return ""
+    if len(value) > 80:
+        return ""
+    # Must start with alphanumeric
+    if not value[0].isalnum():
+        return ""
+    # Reject path traversal sequences and separators
+    if any(seq in value for seq in ("..", "/", "\\", "\x00", "\r", "\n")):
+        return ""
+    # Only allow alphanumeric, underscore, hyphen, and dot
+    if not all(c.isalnum() or c in ("_", "-", ".") for c in value):
+        return ""
+    return value
+
+
+def _validated_data_path(value):
+    """Return a safe absolute data path, or an empty string when invalid.
+    
+    Prevents path traversal attacks by ensuring:
+    - Path is absolute (starts with /)
+    - No null bytes or control characters
+    - No path traversal sequences
+    """
+    if not isinstance(value, str) or not value:
+        return ""
+    # Must be absolute path
+    if not os.path.isabs(value):
+        return ""
+    # Reject control characters and path traversal
+    if any(char in value for char in ("\x00", "\r", "\n")):
+        return ""
+    if ".." in value:
+        return ""
+    return value
+
+
+def _inventory_kube_vip(inventory_data):
+    """Return the inventory kube VIP and a safely shaped children mapping."""
+    if not isinstance(inventory_data, dict):
+        return "", {}
+    all_group = inventory_data.get("all", {})
+    if not isinstance(all_group, dict):
+        return "", {}
+    children = all_group.get("children", {})
+    if not isinstance(children, dict):
+        return "", {}
+    kube_vip_group = children.get("kube_vip_group", {})
+    if not isinstance(kube_vip_group, dict):
+        return "", children
+    hosts = kube_vip_group.get("hosts", {})
+    if not isinstance(hosts, dict) or not hosts:
+        return "", children
+    first_host_name = next(iter(hosts))
+    first_host_data = hosts.get(first_host_name, {})
+    if isinstance(first_host_data, dict) and "ansible_host" in first_host_data:
+        return first_host_data["ansible_host"], children
+    return first_host_name, children
+
+
+def _check_ssh_reachability(host):
+    """Run a fixed SSH no-op against a canonical IPv4 destination."""
+    return subprocess.run(
+        ["ssh", *_SSH_OPTIONS, "--", host, "true"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        shell=False,
+        timeout=15,
+    )
+
+
+def _check_remote_directory(host, mount_path):
+    """Check a remote path while transporting the path only as stdin data."""
+    return subprocess.run(
+        ["ssh", *_SSH_OPTIONS, "--", host, _REMOTE_DIRECTORY_CHECK],
+        input=f"{mount_path}\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+        shell=False,
+        timeout=15,
+    )
+
+
 def validate_telemetry_config(
     input_file_path, data, logger, module, omnia_base_dir, module_utils_base, project_name
 ):
@@ -53,6 +190,8 @@ def validate_telemetry_config(
 
     # =========================================================================
     # L2: Validate cluster_inventory — file existence under telemetry input dir
+    # Empty value is allowed — the playbook will resolve a default path:
+    #   $OMNIA_DATA_PATH/orchestrator/output/$OMNIA_PROJECT_NAME/orchestrator_inventory.yml
     # =========================================================================
     cluster_inventory = data.get("cluster_inventory", "")
     if cluster_inventory:
@@ -99,13 +238,11 @@ def validate_telemetry_config(
             # (e.g., /opt/omnia/orchestrator/orchestrator.yml) - no directory restriction
             logger.info(f"cluster_inventory validated: {cluster_inv_full_path}")
     else:
-        errors.append(create_error_msg(
-            "cluster_inventory",
-            "",
-            "cluster_inventory is required. Provide the path to the Ansible inventory file "
-            "(e.g., '/omnia/src/telemetry/input/orchestrator_inventory.yml' or 'orchestrator_inventory.yml')"
-        ))
-        logger.error("cluster_inventory is empty or not provided")
+        # Empty cluster_inventory is allowed — playbook resolves default from
+        # $OMNIA_DATA_PATH/orchestrator/output/$OMNIA_PROJECT_NAME/orchestrator_inventory.yml
+        logger.info(
+            "cluster_inventory is empty — playbook will use default orchestrator output path"
+        )
 
     # =========================================================================
     # L2: Validate kube_vip — extracted from cluster_inventory file
@@ -132,33 +269,35 @@ def validate_telemetry_config(
                 # Extract kube_vip from cluster_inventory structure:
                 # all.children.kube_vip_group.hosts.<hostname>.ansible_host or <hostname>
                 # Check for service cluster nodes (service_kube_control_plane)
-                if cluster_inv_data and "all" in cluster_inv_data:
-                    children = cluster_inv_data.get("all", {}).get("children", {})
-                    kube_vip_group = children.get("kube_vip_group", {})
-                    hosts = kube_vip_group.get("hosts", {})
-                    if hosts:
-                        first_host_name = list(hosts.keys())[0]
-                        first_host_data = hosts.get(first_host_name, {})
-                        if isinstance(first_host_data, dict) and "ansible_host" in first_host_data:
-                            kube_vip = first_host_data["ansible_host"]
-                        else:
-                            kube_vip = first_host_name
+                kube_vip, children = _inventory_kube_vip(cluster_inv_data)
+                if children:
+                    if kube_vip:
                         logger.info(f"Extracted kube_vip '{kube_vip}' from cluster_inventory")
                     
                     # Check for service cluster nodes (service_kube_control_plane and service_kube_node)
                     service_kube_control_plane_found = False
                     service_kube_node_found = False
                     for group_name in children.keys():
+                        if not isinstance(group_name, str):
+                            continue
                         if group_name.startswith("service_kube_control_plane"):
                             service_kube_control_plane_found = True
-                            group_hosts = children.get(group_name, {}).get("hosts", {})
+                            group_data = children.get(group_name, {})
+                            group_hosts = (
+                                group_data.get("hosts", {})
+                                if isinstance(group_data, dict) else {}
+                            )
                             if group_hosts and len(group_hosts) > 0:
                                 logger.info(f"Found service_kube_control_plane group: {group_name} with {len(group_hosts)} node(s)")
                             else:
                                 logger.warning(f"service_kube_control_plane group '{group_name}' has no hosts")
                         elif group_name.startswith("service_kube_node"):
                             service_kube_node_found = True
-                            group_hosts = children.get(group_name, {}).get("hosts", {})
+                            group_data = children.get(group_name, {})
+                            group_hosts = (
+                                group_data.get("hosts", {})
+                                if isinstance(group_data, dict) else {}
+                            )
                             if group_hosts and len(group_hosts) > 0:
                                 logger.info(f"Found service_kube_node group: {group_name} with {len(group_hosts)} node(s)")
                             else:
@@ -168,47 +307,20 @@ def validate_telemetry_config(
             except (yaml.YAMLError, OSError, KeyError, TypeError) as e:
                 logger.warning(f"Failed to extract kube_vip from cluster_inventory: {e}")
 
-    kube_vip_valid = False
-    if kube_vip and isinstance(kube_vip, str):
-        octets = kube_vip.strip().split(".")
-        if len(octets) == 4:
-            kube_vip_valid = True
-            for octet in octets:
-                try:
-                    val = int(octet)
-                    if val < 0 or val > 255:
-                        kube_vip_valid = False
-                        break
-                except ValueError:
-                    kube_vip_valid = False
-                    break
-            if not kube_vip_valid:
-                errors.append(create_error_msg(
-                    "kube_vip",
-                    kube_vip,
-                    en_us_validation_msg.KUBE_VIP_INVALID_IPV4_MSG
-                ))
+    safe_kube_vip = _canonical_ipv4(kube_vip)
+    if kube_vip:
+        if not safe_kube_vip:
+            errors.append(create_error_msg(
+                "kube_vip",
+                kube_vip,
+                en_us_validation_msg.KUBE_VIP_INVALID_IPV4_MSG
+            ))
         logger.info(f"kube_vip L2 validation checked: {kube_vip}")
 
-        if kube_vip_valid:
+        if safe_kube_vip:
             # Check SSH reachability of kube_vip
             try:
-                ssh_reach_cmd = [
-                    "ssh",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "ConnectTimeout=10",
-                    "-o", "BatchMode=yes",
-                    kube_vip,
-                    "true"
-                ]
-                reach_result = subprocess.run(
-                    ssh_reach_cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=False,
-                    timeout=15
-                )
+                reach_result = _check_ssh_reachability(safe_kube_vip)
                 if reach_result.returncode != 0:
                     errors.append(create_error_msg(
                         "kube_vip",
@@ -216,7 +328,6 @@ def validate_telemetry_config(
                         en_us_validation_msg.KUBE_VIP_SSH_UNREACHABLE_MSG
                     ))
                     logger.error(f"kube_vip '{kube_vip}' is not reachable via SSH")
-                    kube_vip_valid = False
                 else:
                     logger.info(f"kube_vip '{kube_vip}' is reachable via SSH")
             except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as e:
@@ -226,7 +337,6 @@ def validate_telemetry_config(
                     en_us_validation_msg.KUBE_VIP_SSH_UNREACHABLE_MSG
                 ))
                 logger.warning(f"SSH reachability check for kube_vip failed: {e}")
-                kube_vip_valid = False
 
         # kube_vip validation complete
 
@@ -250,6 +360,51 @@ def validate_telemetry_config(
     idrac_telemetry_support = idrac_source.get("metrics_enabled", False)
     idrac_collection_targets = idrac_source.get("collection_targets", [])
 
+    # iDRAC inventory is mandatory only when iDRAC telemetry is enabled.
+    # Resolve relative paths from the directory containing telemetry_config.yml,
+    # which is also where the default project input files are stored.
+    idrac_configurations = data.get("idrac_telemetry_configurations", {})
+    if not isinstance(idrac_configurations, dict):
+        idrac_configurations = {}
+    bmc_group_data_path = idrac_configurations.get("bmc_group_data_path", "")
+
+    if idrac_telemetry_support:
+        if not isinstance(bmc_group_data_path, str) or not bmc_group_data_path.strip():
+            errors.append(create_error_msg(
+                "idrac_telemetry_configurations.bmc_group_data_path",
+                bmc_group_data_path,
+                "bmc_group_data_path is required when "
+                "telemetry_sources.idrac.metrics_enabled is true. Provide the path "
+                "to an existing bmc_group_data.csv file."
+            ))
+            logger.error(
+                "bmc_group_data_path is empty while iDRAC telemetry is enabled"
+            )
+        else:
+            configured_bmc_path = bmc_group_data_path.strip()
+            if os.path.isabs(configured_bmc_path):
+                resolved_bmc_path = configured_bmc_path
+            else:
+                resolved_bmc_path = os.path.join(
+                    os.path.dirname(input_file_path), configured_bmc_path
+                )
+
+            if not os.path.isfile(resolved_bmc_path):
+                errors.append(create_error_msg(
+                    "idrac_telemetry_configurations.bmc_group_data_path",
+                    bmc_group_data_path,
+                    f"BMC group data file not found at: {resolved_bmc_path}. "
+                    "Provide the path to an existing bmc_group_data.csv file."
+                ))
+                logger.error(
+                    "bmc_group_data_path does not reference an existing file: %s",
+                    resolved_bmc_path,
+                )
+            else:
+                logger.info(
+                    "bmc_group_data_path validated: %s", resolved_bmc_path
+                )
+
     # Bridge feature flags
     vector_ldms = telemetry_bridges.get("vector_ldms", {})
     vector_ome = telemetry_bridges.get("vector_ome", {})
@@ -261,7 +416,7 @@ def validate_telemetry_config(
     # =========================================================================
     # Validate collection_targets per source type
     # =========================================================================
-    # iDRAC: supports kafka and victoria_metrics
+    # iDRAC: supports kafka and victoria_metrics (at least one required when enabled)
     idrac_targets = set(idrac_collection_targets)
     allowed_idrac_targets = {"kafka", "victoria_metrics"}
     invalid_idrac_targets = idrac_targets - allowed_idrac_targets
@@ -270,6 +425,14 @@ def validate_telemetry_config(
             "telemetry_sources.idrac.collection_targets",
             list(invalid_idrac_targets),
             f"Invalid collection targets for iDRAC. Only 'kafka' and 'victoria_metrics' are supported. Found: {invalid_idrac_targets}"
+        ))
+    
+    # iDRAC only has metrics_enabled (no logs_enabled)
+    if idrac_telemetry_support and not idrac_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.idrac.collection_targets",
+            list(idrac_targets),
+            "iDRAC collection_targets must not be empty when iDRAC telemetry is enabled. At least one target is required ('kafka' or 'victoria_metrics')."
         ))
 
     # LDMS: only supports kafka
@@ -291,6 +454,32 @@ def validate_telemetry_config(
             list(invalid_powerscale_targets),
             f"Invalid collection targets for PowerScale. Only 'victoria_metrics' and 'victoria_logs' are supported. Found: {invalid_powerscale_targets}"
         ))
+    
+    # Validate that required targets are present based on enabled features
+    powerscale_metrics_enabled = powerscale_source.get("metrics_enabled", False)
+    powerscale_logs_enabled = powerscale_source.get("logs_enabled", False)
+    
+    if powerscale_metrics_enabled and "victoria_metrics" not in powerscale_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.powerscale.collection_targets",
+            list(powerscale_targets),
+            "PowerScale collection_targets must include 'victoria_metrics' when metrics_enabled is true."
+        ))
+    
+    if powerscale_logs_enabled and "victoria_logs" not in powerscale_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.powerscale.collection_targets",
+            list(powerscale_targets),
+            "PowerScale collection_targets must include 'victoria_logs' when logs_enabled is true."
+        ))
+    
+    # Ensure at least one target is specified when any feature is enabled
+    if (powerscale_metrics_enabled or powerscale_logs_enabled) and not powerscale_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.powerscale.collection_targets",
+            list(powerscale_targets),
+            "PowerScale collection_targets must not be empty when PowerScale telemetry is enabled. At least one target is required."
+        ))
 
     # UFM: supports victoria_metrics and victoria_logs
     ufm_targets = set(ufm_source.get("collection_targets", []))
@@ -301,6 +490,69 @@ def validate_telemetry_config(
             "telemetry_sources.ufm.collection_targets",
             list(invalid_ufm_targets),
             f"Invalid collection targets for UFM. Only 'victoria_metrics' and 'victoria_logs' are supported. Found: {invalid_ufm_targets}"
+        ))
+    
+    # Validate that required targets are present based on enabled features
+    ufm_metrics_enabled = ufm_source.get("metrics_enabled", False)
+    ufm_logs_enabled = ufm_source.get("logs_enabled", False)
+    
+    if ufm_metrics_enabled and "victoria_metrics" not in ufm_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.ufm.collection_targets",
+            list(ufm_targets),
+            "UFM collection_targets must include 'victoria_metrics' when metrics_enabled is true."
+        ))
+    
+    if ufm_logs_enabled and "victoria_logs" not in ufm_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.ufm.collection_targets",
+            list(ufm_targets),
+            "UFM collection_targets must include 'victoria_logs' when logs_enabled is true."
+        ))
+    
+    # Ensure at least one target is specified when any feature is enabled
+    if (ufm_metrics_enabled or ufm_logs_enabled) and not ufm_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.ufm.collection_targets",
+            list(ufm_targets),
+            "UFM collection_targets must not be empty when UFM telemetry is enabled. At least one target is required."
+        ))
+
+    # VAST: supports victoria_metrics and victoria_logs
+    vast_targets = set(vast_source.get("collection_targets", []))
+    allowed_vast_targets = {"victoria_metrics", "victoria_logs"}
+    invalid_vast_targets = vast_targets - allowed_vast_targets
+    if invalid_vast_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.vast.collection_targets",
+            list(invalid_vast_targets),
+            f"Invalid collection targets for VAST. Only 'victoria_metrics' and 'victoria_logs' are supported. Found: {invalid_vast_targets}"
+        ))
+    
+    # Validate that required targets are present based on enabled features
+    vast_metrics_enabled = vast_source.get("metrics_enabled", False)
+    vast_logs_enabled = vast_source.get("logs_enabled", False)
+    
+    if vast_metrics_enabled and "victoria_metrics" not in vast_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.vast.collection_targets",
+            list(vast_targets),
+            "VAST collection_targets must include 'victoria_metrics' when metrics_enabled is true."
+        ))
+    
+    if vast_logs_enabled and "victoria_logs" not in vast_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.vast.collection_targets",
+            list(vast_targets),
+            "VAST collection_targets must include 'victoria_logs' when logs_enabled is true."
+        ))
+    
+    # Ensure at least one target is specified when any feature is enabled
+    if (vast_metrics_enabled or vast_logs_enabled) and not vast_targets:
+        errors.append(create_error_msg(
+            "telemetry_sources.vast.collection_targets",
+            list(vast_targets),
+            "VAST collection_targets must not be empty when VAST telemetry is enabled. At least one target is required."
         ))
 
     # OME: only supports kafka (OME does NOT push directly to VictoriaMetrics)
@@ -315,7 +567,7 @@ def validate_telemetry_config(
 
 
     # =========================================================================
-    # Validate Kafka topic_partitions (now a dict: {idrac: N, ldms: N})
+    # Validate Kafka topic_partitions (a dict containing the iDRAC and LDMS topics)
     # =========================================================================
 
 
@@ -928,135 +1180,240 @@ def validate_telemetry_packages(
     # Validate k8s_cluster_mount
     # =========================================================================
     k8s_cluster_mount = data.get("k8s_cluster_mount", "")
-    if not k8s_cluster_mount or (isinstance(k8s_cluster_mount, str) and k8s_cluster_mount.strip() == ""):
+    safe_k8s_cluster_mount = _validated_mount_path(k8s_cluster_mount)
+    if not k8s_cluster_mount or (
+        isinstance(k8s_cluster_mount, str)
+        and k8s_cluster_mount.strip() == ""
+    ):
         errors.append(create_error_msg(
             "k8s_cluster_mount",
             k8s_cluster_mount,
             en_us_validation_msg.K8S_CLUSTER_MOUNT_REQUIRED_MSG
         ))
+    elif not safe_k8s_cluster_mount:
+        errors.append(create_error_msg(
+            "k8s_cluster_mount",
+            k8s_cluster_mount,
+            en_us_validation_msg.K8S_CLUSTER_MOUNT_INVALID_MSG
+        ))
     else:
         logger.info(f"k8s_cluster_mount validation PASSED: {k8s_cluster_mount}")
-        
+
         # Cross-file validation: check if k8s_cluster_mount exists on kube_vip
         input_dir = os.path.dirname(input_file_path)
         telemetry_config_path = os.path.join(input_dir, "telemetry_config.yml")
-        
+
         if os.path.exists(telemetry_config_path):
             try:
-                with open(telemetry_config_path, 'r', encoding='utf-8') as f:
-                    telemetry_config = yaml.safe_load(f)
+                with open(
+                    telemetry_config_path, "r", encoding="utf-8"
+                ) as config_stream:
+                    telemetry_config = yaml.safe_load(config_stream)
+
+                kube_vip = (
+                    telemetry_config.get("kube_vip", "")
+                    if isinstance(telemetry_config, dict) else ""
+                )
+                cluster_inventory = (
+                    telemetry_config.get("cluster_inventory", "")
+                    if isinstance(telemetry_config, dict) else ""
+                )
                 
-                kube_vip = telemetry_config.get("kube_vip", "") if isinstance(telemetry_config, dict) else ""
-
-                # If kube_vip not in telemetry_config, try to extract from cluster_inventory
-                if (not kube_vip or not isinstance(kube_vip, str) or not kube_vip.strip()):
-                    cluster_inventory = telemetry_config.get("cluster_inventory", "") if isinstance(telemetry_config, dict) else ""
-                    if cluster_inventory and isinstance(cluster_inventory, str) and cluster_inventory.strip():
-                        cluster_inv_path = cluster_inventory.strip()
-                        if not os.path.isabs(cluster_inv_path):
-                            cluster_inv_full_path = os.path.join(input_dir, cluster_inv_path)
-                        else:
-                            cluster_inv_full_path = cluster_inv_path
-
-                        if os.path.exists(cluster_inv_full_path) and os.path.isfile(cluster_inv_full_path):
-                            try:
-                                with open(cluster_inv_full_path, "r", encoding="utf-8") as inv_file:
-                                    cluster_inv_data = yaml.safe_load(inv_file)
-                                # Extract kube_vip from cluster_inventory structure
-                                if cluster_inv_data and "all" in cluster_inv_data:
-                                    children = cluster_inv_data.get("all", {}).get("children", {})
-                                    kube_vip_group = children.get("kube_vip_group", {})
-                                    hosts = kube_vip_group.get("hosts", {})
-                                    if hosts:
-                                        first_host_name = list(hosts.keys())[0]
-                                        first_host_data = hosts.get(first_host_name, {})
-                                        if isinstance(first_host_data, dict) and "ansible_host" in first_host_data:
-                                            kube_vip = first_host_data["ansible_host"]
-                                        else:
-                                            kube_vip = first_host_name
-                                        logger.info(f"Extracted kube_vip '{kube_vip}' from cluster_inventory for k8s_cluster_mount validation")
-                            except (yaml.YAMLError, OSError, KeyError, TypeError) as e:
-                                logger.warning(f"Failed to extract kube_vip from cluster_inventory: {e}")
-
-                if kube_vip and isinstance(kube_vip, str) and kube_vip.strip():
-                    # First, verify kube_vip is reachable via SSH
-                    logger.info(f"Pre-checking SSH reachability to kube_vip '{kube_vip}' before k8s_cluster_mount path validation")
+                # Resolve cluster_inventory path: use configured value or default
+                cluster_inv_path = None
+                if isinstance(cluster_inventory, str) and cluster_inventory.strip():
+                    # Configured value
+                    cluster_inv_path = cluster_inventory.strip()
+                else:
+                    # Empty or not set: use default orchestrator output path
+                    # Default: $OMNIA_DATA_PATH/orchestrator/output/$OMNIA_PROJECT_NAME/orchestrator_inventory.yml
+                    omnia_data_path = os.environ.get("OMNIA_DATA_PATH", "/opt/omnia").rstrip("/")
+                    project_name = os.environ.get("OMNIA_PROJECT_NAME", "project_default")
                     
-                    try:
-                        ssh_reach_cmd = [
-                            "ssh",
-                            "-o", "StrictHostKeyChecking=no",
-                            "-o", "UserKnownHostsFile=/dev/null",
-                            "-o", "ConnectTimeout=10",
-                            "-o", "BatchMode=yes",
-                            kube_vip,
-                            "true"
-                        ]
-                        reach_result = subprocess.run(
-                            ssh_reach_cmd,
-                            stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE,
-                            check=False,
-                            timeout=15
+                    # Validate project name to prevent path traversal
+                    safe_project_name = _validated_project_name(project_name)
+                    if not safe_project_name:
+                        logger.warning(
+                            "OMNIA_PROJECT_NAME contains invalid characters: %s; "
+                            "using default 'project_default'",
+                            project_name,
                         )
-                        
+                        safe_project_name = "project_default"
+                    
+                    # Validate OMNIA_DATA_PATH is absolute and safe
+                    safe_data_path = _validated_data_path(omnia_data_path)
+                    if not safe_data_path:
+                        logger.warning(
+                            "OMNIA_DATA_PATH is invalid or not absolute: %s; using /opt/omnia",
+                            omnia_data_path,
+                        )
+                        safe_data_path = "/opt/omnia"
+                    omnia_data_path = safe_data_path
+                    
+                    cluster_inv_path = f"{omnia_data_path}/orchestrator/output/{safe_project_name}/orchestrator_inventory.yml"
+                    logger.info(
+                        "cluster_inventory is empty; using default path: %s",
+                        cluster_inv_path,
+                    )
+                
+                if (
+                    (
+                        not isinstance(kube_vip, str)
+                        or not kube_vip.strip()
+                    )
+                    and cluster_inv_path
+                ):
+                    if not os.path.isabs(cluster_inv_path):
+                        cluster_inv_full_path = os.path.join(
+                            input_dir, cluster_inv_path,
+                        )
+                    else:
+                        cluster_inv_full_path = cluster_inv_path
+
+                    if os.path.isfile(cluster_inv_full_path):
+                        try:
+                            with open(
+                                cluster_inv_full_path,
+                                "r",
+                                encoding="utf-8",
+                            ) as inv_file:
+                                cluster_inv_data = yaml.safe_load(inv_file)
+                            kube_vip, _children = _inventory_kube_vip(
+                                cluster_inv_data,
+                            )
+                            if kube_vip:
+                                logger.info(
+                                    "Extracted kube_vip '%s' from "
+                                    "cluster_inventory for "
+                                    "k8s_cluster_mount validation",
+                                    kube_vip,
+                                )
+                        except (
+                            yaml.YAMLError, OSError, KeyError, TypeError
+                        ) as error:
+                            logger.warning(
+                                "Failed to extract kube_vip from "
+                                "cluster_inventory: %s",
+                                error,
+                            )
+
+                safe_kube_vip = _canonical_ipv4(kube_vip)
+                if safe_kube_vip:
+                    # First, verify kube_vip is reachable via SSH
+                    logger.info(
+                        "Pre-checking SSH reachability to kube_vip '%s' "
+                        "before k8s_cluster_mount path validation",
+                        safe_kube_vip,
+                    )
+
+                    try:
+                        reach_result = _check_ssh_reachability(
+                            safe_kube_vip,
+                        )
+
                         if reach_result.returncode != 0:
-                            logger.warning(f"kube_vip '{kube_vip}' is not reachable via SSH, skipping k8s_cluster_mount path check")
-                            logger.info("k8s_cluster_mount path validation skipped due to kube_vip SSH unreachability")
+                            logger.warning(
+                                "kube_vip '%s' is not reachable via SSH; "
+                                "skipping k8s_cluster_mount path check",
+                                safe_kube_vip,
+                            )
+                            logger.info(
+                                "k8s_cluster_mount path validation skipped "
+                                "due to kube_vip SSH unreachability"
+                            )
                         else:
-                            logger.info(f"kube_vip '{kube_vip}' is reachable, proceeding with k8s_cluster_mount path check")
-                            
+                            logger.info(
+                                "kube_vip '%s' is reachable; proceeding "
+                                "with k8s_cluster_mount path check",
+                                safe_kube_vip,
+                            )
+
                             # Now check if k8s_cluster_mount path exists
                             try:
-                                ssh_cmd = [
-                                    "ssh",
-                                    "-o", "StrictHostKeyChecking=no",
-                                    "-o", "UserKnownHostsFile=/dev/null",
-                                    "-o", "ConnectTimeout=10",
-                                    kube_vip,
-                                    f"test -d {k8s_cluster_mount}"
-                                ]
-                                result = subprocess.run(
-                                    ssh_cmd,
-                                    stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE,
-                                    check=False,
-                                    timeout=15
+                                result = _check_remote_directory(
+                                    safe_kube_vip,
+                                    safe_k8s_cluster_mount,
                                 )
-                                
+
                                 if result.returncode != 0:
                                     errors.append(create_error_msg(
                                         "k8s_cluster_mount",
                                         k8s_cluster_mount,
                                         en_us_validation_msg.K8S_CLUSTER_MOUNT_PATH_NOT_FOUND_ON_KUBE_VIP_MSG
                                     ))
-                                    logger.error(f"k8s_cluster_mount path '{k8s_cluster_mount}' does not exist on kube_vip '{kube_vip}'")
+                                    logger.error(
+                                        "k8s_cluster_mount path '%s' does "
+                                        "not exist on kube_vip '%s'",
+                                        safe_k8s_cluster_mount,
+                                        safe_kube_vip,
+                                    )
                                 else:
-                                    logger.info(f"k8s_cluster_mount path '{k8s_cluster_mount}' exists on kube_vip '{kube_vip}'")
-                            
-                            except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as e:
-                                logger.warning(f"SSH check for k8s_cluster_mount path failed: {e}")
+                                    logger.info(
+                                        "k8s_cluster_mount path '%s' exists "
+                                        "on kube_vip '%s'",
+                                        safe_k8s_cluster_mount,
+                                        safe_kube_vip,
+                                    )
+
+                            except (
+                                subprocess.TimeoutExpired,
+                                subprocess.SubprocessError,
+                                OSError,
+                            ) as error:
+                                logger.warning(
+                                    "SSH check for k8s_cluster_mount path "
+                                    "failed: %s",
+                                    error,
+                                )
                                 errors.append(create_error_msg(
                                     "k8s_cluster_mount",
                                     k8s_cluster_mount,
                                     en_us_validation_msg.K8S_CLUSTER_MOUNT_SSH_CHECK_FAILED_MSG
                                 ))
-                    
-                    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as e:
-                        logger.warning(f"SSH reachability check for kube_vip failed: {e}")
-                        logger.info("k8s_cluster_mount path validation skipped due to kube_vip SSH check failure")
+
+                    except (
+                        subprocess.TimeoutExpired,
+                        subprocess.SubprocessError,
+                        OSError,
+                    ) as error:
+                        logger.warning(
+                            "SSH reachability check for kube_vip failed: %s",
+                            error,
+                        )
+                        logger.info(
+                            "k8s_cluster_mount path validation skipped "
+                            "due to kube_vip SSH check failure"
+                        )
                 else:
-                    logger.warning("kube_vip not found in telemetry_config.yml, skipping k8s_cluster_mount path check")
+                    if kube_vip:
+                        errors.append(create_error_msg(
+                            "kube_vip",
+                            kube_vip,
+                            en_us_validation_msg.KUBE_VIP_INVALID_IPV4_MSG
+                        ))
+                    logger.warning(
+                        "A valid kube_vip was not found in "
+                        "cluster_inventory; skipping k8s_cluster_mount "
+                        "path check"
+                    )
                     errors.append(create_error_msg(
                         "k8s_cluster_mount",
                         k8s_cluster_mount,
                         en_us_validation_msg.K8S_CLUSTER_MOUNT_KUBE_VIP_NOT_FOUND_MSG
                     ))
-            
-            except (yaml.YAMLError, IOError, OSError) as e:
-                logger.warning(f"Failed to load telemetry_config.yml for kube_vip lookup: {e}")
+
+            except (yaml.YAMLError, OSError) as error:
+                logger.warning(
+                    "Failed to load telemetry_config.yml for kube_vip "
+                    "lookup: %s",
+                    error,
+                )
         else:
-            logger.warning(f"telemetry_config.yml not found at {telemetry_config_path}, skipping k8s_cluster_mount path check")
+            logger.warning(
+                "telemetry_config.yml not found at %s; skipping "
+                "k8s_cluster_mount path check",
+                telemetry_config_path,
+            )
 
     # =========================================================================
     # Validate slurm_cluster_mount
@@ -1085,7 +1442,8 @@ def validate_telemetry_packages(
         logger.info(f"install_mode validation PASSED: {install_mode}")
 
     # =========================================================================
-    # Validate repo_url (required for offline mode)
+    # Validate repo_url (optional for offline mode — auto-derived from
+    # SYSTEM_ADMIN_NIC_IPV4 when empty)
     # =========================================================================
     repo_url = data.get("repo_url", "")
     if install_mode == "offline":
@@ -1099,7 +1457,11 @@ def validate_telemetry_packages(
             else:
                 logger.info(f"repo_url validation PASSED: {repo_url}")
         else:
-            logger.warning("repo_url is empty in offline mode — package downloads may fail")
+            logger.info(
+                "repo_url is empty in offline mode — will auto-derive from "
+                "SYSTEM_ADMIN_NIC_IPV4 at runtime: "
+                "https://<SYSTEM_ADMIN_NIC_IPV4>:2225/pulp/content/offline_repo/cluster/x86_64/rhel/10.0"
+            )
 
     # =========================================================================
     # Validate container_registry format (when provided)

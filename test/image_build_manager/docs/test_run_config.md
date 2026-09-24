@@ -189,7 +189,8 @@ NFT is destructive: it runs repeated prepare plus timed prepare, build, and
 cleanup operations. Its final test executes full cleanup. Do not enable FVT
 `cleanup` and NFT in the same unattended batch unless domain credentials are
 re-provisioned between them, because FVT cleanup removes the credentials that
-the later NFT build needs.
+the later NFT build needs. Re-provision them by running
+`./setup_env.sh --set-domain-creds` on the execution OIM.
 
 ---
 
@@ -260,8 +261,7 @@ ut_image_build_manager:
   marker: ""
 ```
 
-The complete `command: "test"` cleanup example assumes the default MinIO
-backend. With PowerScale, full cleanup intentionally retains the external S3
-buckets and `/root/.s3cfg`, while `TC_CL_005` and `TC_CL_006` currently expect
-them to be absent. Configure the final cleanup entry with `command: "exec"`
-for PowerScale and verify the applicable local cleanup state separately.
+The complete `command: "test"` cleanup example supports MinIO and PowerScale.
+With PowerScale, full cleanup intentionally retains the external S3 buckets
+and `/root/.s3cfg`; the two MinIO-specific verification cases detect that
+provider and skip automatically while all applicable checks continue.

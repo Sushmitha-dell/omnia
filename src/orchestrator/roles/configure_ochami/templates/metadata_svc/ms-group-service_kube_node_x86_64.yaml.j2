@@ -174,31 +174,16 @@
         - {{ cmd }}
 {% endfor %}
 {% endif %}
-{% raw %}
-      {% if ds.meta_data.instance_data.v1.vendor_data.groups.ssh.host_mount_map is mapping and ds.meta_data.instance_data.v1.vendor_data.groups.ssh.host_mount_map %}
-      {% set mymounts = ds.meta_data.instance_data.v1.vendor_data.groups.ssh.host_mount_map.get(local_hostname, {}) %}
-      {% if mymounts %}
-      {% for mount in mymounts.get("mounts", []) %}
-        - mkdir -pv {{ mount[1] }}
-        - echo "{{ mount | join(' ') }}" >> /etc/fstab
-      {% endfor %}
-        - mount -av
-      {% for decoded_cmd in mymounts.get("runcmd", []) %}
-        - {{ decoded_cmd }}
-      {% endfor %}
-      {% else %}
-        - echo "No mount entries found for this host"
-      {% endif %}
-      {% endif %}
-{% endraw %}
+{# mount_config host_mount_map block removed - incompatible with Pongo2 validation #}
+{# When mount_config bolt-on is needed, implement as a shell script in write_files #}
 {% for pv_entry in metadata_svc_groups_dict[functional_group_name].powervault_scripts | default([], true) %} 
         - bash /usr/local/bin/setup_iscsi_storage_{{ pv_entry.name }}.sh
 {% endfor %}
         # K8s NFS mount entries
         - mkdir -pv /tmp/crio-storage {{ k8s_client_mount_path }} /var/lib/kubelet /etc/kubernetes /var/log/pods /var/lib/packages
-        - echo "{{ k8s_nfs_server_path }}/{% raw %}{{ ds.meta_data.instance_data.local_ipv4 }}{% endraw %}/kubelet   /var/lib/kubelet     nfs noatime,nolock 0 0" >> /etc/fstab
-        - echo "{{ k8s_nfs_server_path }}/{% raw %}{{ ds.meta_data.instance_data.local_ipv4 }}{% endraw %}/kubernetes   /etc/kubernetes      nfs noatime,nolock 0 0" >> /etc/fstab
-        - echo "{{ k8s_nfs_server_path }}/{% raw %}{{ ds.meta_data.instance_data.local_ipv4 }}{% endraw %}/pod-logs   /var/log/pods      nfs noatime,nolock 0 0" >> /etc/fstab
+        - echo "{{ k8s_nfs_server_path }}/{{ "{{" }} ds.meta_data.instance_data.v1.local_ipv4 {{ "}}" }}/kubelet   /var/lib/kubelet     nfs noatime,nolock 0 0" >> /etc/fstab
+        - echo "{{ k8s_nfs_server_path }}/{{ "{{" }} ds.meta_data.instance_data.v1.local_ipv4 {{ "}}" }}/kubernetes   /etc/kubernetes      nfs noatime,nolock 0 0" >> /etc/fstab
+        - echo "{{ k8s_nfs_server_path }}/{{ "{{" }} ds.meta_data.instance_data.v1.local_ipv4 {{ "}}" }}/pod-logs   /var/log/pods      nfs noatime,nolock 0 0" >> /etc/fstab
         - echo "{{ k8s_nfs_server_path }}/packages   /var/lib/packages        nfs    noatime,nolock     0 0" >> /etc/fstab
         - echo "tmpfs   /tmp/crio-storage   tmpfs   size={{ k8s_crio_storage_size }},noatime,nodev,nosuid   0 0" >> /etc/fstab
         - sudo swapoff -a
@@ -211,25 +196,25 @@
         - systemctl start firewalld
 
         # Open required ports for kube node
-        - firewall-cmd --permanent --add-port=22/tcp
-        - firewall-cmd --permanent --add-port=10250/tcp
-        - firewall-cmd --permanent --add-port=30000-32767/tcp
-        - firewall-cmd --permanent --add-port=179/tcp
-        - firewall-cmd --permanent --add-port=4789/udp
-        - firewall-cmd --permanent --add-port=5473/tcp
-        - firewall-cmd --permanent --add-port=51820/udp
-        - firewall-cmd --permanent --add-port=51821/udp
-        - firewall-cmd --permanent --add-port=9100/tcp
-        - firewall-cmd --permanent --add-port=7472/tcp
-        - firewall-cmd --permanent --add-port=7472/udp
-        - firewall-cmd --permanent --add-port=7946/tcp
-        - firewall-cmd --permanent --add-port=7946/udp
-        - firewall-cmd --permanent --add-port=9090/tcp
-        - firewall-cmd --permanent --add-port=8080/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=22/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=10250/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=30000-32767/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=179/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=4789/udp
+        - firewall-cmd --permanent --zone=trusted --add-port=5473/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=51820/udp
+        - firewall-cmd --permanent --zone=trusted --add-port=51821/udp
+        - firewall-cmd --permanent --zone=trusted --add-port=9100/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=7472/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=7472/udp
+        - firewall-cmd --permanent --zone=trusted --add-port=7946/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=7946/udp
+        - firewall-cmd --permanent --zone=trusted --add-port=9090/tcp
+        - firewall-cmd --permanent --zone=trusted --add-port=8080/tcp
 
         # Enable services
-        - firewall-cmd --permanent --add-service=http
-        - firewall-cmd --permanent --add-service=https
+        - firewall-cmd --permanent --zone=trusted --add-service=http
+        - firewall-cmd --permanent --zone=trusted --add-service=https
 
         # Add Kubernetes pod/service CIDRs (replace with your actual values)
         - firewall-cmd --permanent --zone=trusted --add-source={{ k8s_service_addresses }}
@@ -248,6 +233,10 @@
         - sysctl --system
         - |
           tmpfile=$(mktemp)
+          resolv_target=$(readlink -f /etc/resolv.conf 2>/dev/null || true)
+          [ -n "$resolv_target" ] || resolv_target=/etc/resolv.conf
+          resolv_tmp=$(mktemp "$(dirname "$resolv_target")/.resolv.conf.XXXXXX")
+          trap 'rm -f "$tmpfile" "$resolv_tmp"' EXIT
 
           # Extract the first 'search' line only (ignore duplicates)
           search_line=$(grep '^search' /etc/resolv.conf | head -n1)
@@ -261,12 +250,32 @@
           # Add remaining lines except search and empty lines
           grep -v '^search' /etc/resolv.conf | grep -v '^$' >> "$tmpfile"
 
-          # Remove duplicate lines
-          awk '!seen[$0]++' "$tmpfile" > /etc/resolv.conf
-        - |
-          if command -v chattr >/dev/null 2>&1; then
-            chattr +i /etc/resolv.conf || true
+          # Build the replacement before unlocking the live resolver file.
+          awk '!seen[$0]++' "$tmpfile" > "$resolv_tmp"
+          if [ -e "$resolv_target" ]; then
+            chown --reference="$resolv_target" "$resolv_tmp"
+            chmod --reference="$resolv_target" "$resolv_tmp"
+          else
+            chmod 0644 "$resolv_tmp"
           fi
+
+          if command -v chattr >/dev/null 2>&1; then
+            chattr -i "$resolv_target" || true
+          fi
+          if ! mv -f -- "$resolv_tmp" "$resolv_target"; then
+            echo "ERROR: Failed to atomically replace $resolv_target" >&2
+            if command -v chattr >/dev/null 2>&1; then
+              chattr +i "$resolv_target" || true
+            fi
+            rm -f "$tmpfile" "$resolv_tmp"
+            trap - EXIT
+            exit 1
+          fi
+          if command -v chattr >/dev/null 2>&1; then
+            chattr +i "$resolv_target" || true
+          fi
+          rm -f "$tmpfile"
+          trap - EXIT
         - systemctl restart rpcbind
         - mount -av
         - cp {{ k8s_client_mount_path }}/pulp_webserver.crt /etc/pki/ca-trust/source/anchors
@@ -279,7 +288,6 @@
         - systemctl start crio.service
         - systemctl enable crio.service
         - sudo systemctl enable --now kubelet
-        - kubeadm config images pull --kubernetes-version={{ service_k8s_version }}
 {% set role_name = 'service_kube_node' %}
 {% include 'pull_additional_images.yaml.j2' %}
         - |
@@ -289,10 +297,33 @@
           if [ ! -f "$MARKER" ]; then
             # Join Kubernetes cluster
             echo "Initial boot - initializing and setting up service_kube_node_x86_64"
-            rm -rf /var/lib/kubelet/* /etc/kubernetes/*
-            rm -rf /var/lib/kubelet/.* /etc/kubernetes/.*
+            # Stop and reset any incomplete state left by an earlier PXE attempt.
+            systemctl stop kubelet.service || true
+            kubeadm reset --force --cri-socket=unix:///var/run/crio/crio.sock || true
+            systemctl stop crio.service || true
+            for state_dir in /var/lib/kubelet /etc/kubernetes; do
+              mkdir -p "$state_dir"
+              find "$state_dir" -mindepth 1 -xdev -delete
+            done
+            systemctl start crio.service
+            crio_ready=false
+            for attempt in $(seq 1 60); do
+              if crictl info >/dev/null 2>&1; then
+                crio_ready=true
+                break
+              fi
+              echo "Waiting for CRI-O before pulling images (attempt ${attempt}/60)..."
+              sleep 2
+            done
+            if [ "$crio_ready" != "true" ]; then
+              echo "ERROR: CRI-O did not become ready within 2 minutes."
+              exit 1
+            fi
+            kubeadm config images pull --kubernetes-version={{ service_k8s_version }}
+            systemctl start kubelet.service
+
             K8S_CLIENT_MOUNT_PATH="{{ k8s_client_mount_path }}"
-            NODE_NAME="{% raw %}{{ ds.meta_data.instance_data.local_ipv4 }}{% endraw %}"
+            NODE_NAME="{{ "{{" }} ds.meta_data.instance_data.v1.local_ipv4 {{ "}}" }}"
             KUBE_VIP="{{ kube_vip }}"
             JOIN_CMD_FILE="${K8S_CLIENT_MOUNT_PATH}/worker-join-command.sh"
             echo "----------------------------------------------------------------------"

@@ -26,6 +26,11 @@
       "description": "Global caching policy that controls Pulp download behavior",
       "default": true
     },
+    "standard": {
+      "type": "boolean",
+      "description": "Use standard RHEL subscription repositories instead of EUS-first discovery",
+      "default": false
+    },
     "registries": {
       "type": ["object", "null"],
       "description": "Container registry configurations keyed by registry name",
@@ -143,6 +148,10 @@
           "type": "boolean",
           "description": "Enable local caching (default: true)"
         },
+        "standard": {
+          "type": "boolean",
+          "description": "Override standard versus EUS-first subscription discovery for this repository"
+        },
         "sslcacert": {
           "type": ["string", "null"],
           "description": "Path to SSL CA certificate"
@@ -167,6 +176,9 @@
     "additional_repos_entry": {
       "type": ["object", "null"],
       "description": "Additional repositories section (map of repo_name -> repo config)",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_.-]+$"
+      },
       "additionalProperties": {
         "$ref": "#/definitions/repo_entry"
       }
@@ -174,6 +186,9 @@
     "arch_repos": {
       "type": "object",
       "description": "Repository definitions for a specific architecture",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9_.-]+$"
+      },
       "properties": {
         "additional_repos": {
           "$ref": "#/definitions/additional_repos_entry"
@@ -181,6 +196,9 @@
         "user_repos": {
           "type": ["object", "null"],
           "description": "User custom repositories",
+          "propertyNames": {
+            "pattern": "^[A-Za-z0-9_.-]+$"
+          },
           "additionalProperties": {
             "$ref": "#/definitions/repo_entry"
           }

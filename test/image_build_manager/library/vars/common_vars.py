@@ -58,6 +58,7 @@ DOMAIN_NAME = "image_build_manager"
 
 # Environment variable names on the target host
 ENV_OMNIA_DATA_PATH = "OMNIA_DATA_PATH"
+ENV_IMAGE_BUILD_MANAGER_DATA_PATH = "IMAGE_BUILD_MANAGER_DATA_PATH"
 ENV_OMNIA_PROJECT_NAME = "OMNIA_PROJECT_NAME"
 
 # =============================================================================
@@ -92,9 +93,13 @@ PLAYBOOK_TAGS = [
 # =============================================================================
 # Derived from OMNIA_DATA_PATH env var when available; falls back for dev boxes.
 
-SHARED_PATH = os.environ.get(
-    ENV_OMNIA_DATA_PATH, "/opt/omnia"
-) + "/image_build_manager"
+SHARED_PATH = (
+    os.environ.get(ENV_IMAGE_BUILD_MANAGER_DATA_PATH)
+    or os.path.join(
+        os.environ.get(ENV_OMNIA_DATA_PATH, "/opt/omnia"),
+        DOMAIN_NAME,
+    )
+).rstrip("/")
 
 # =============================================================================
 # CONTAINER NAMES
@@ -143,16 +148,6 @@ PLAYBOOK_CMD = (
     "ansible-playbook image_build_manager.yml"
 )
 
-# Image artifact types in S3 (per functional group)
-IMAGE_TYPES = ["initramfs", "vmlinuz", "rhel"]
-
-# Image type display names for S3 verification output
-IMAGE_TYPE_DISPLAY = {
-    "initramfs": "initramfs",
-    "vmlinuz": "vmlinuz",
-    "rhel": "rootfs",
-}
-
 # Functional group packages filename
 FG_PACKAGES_FILENAME = "functional_group_packages.yml"
 
@@ -177,6 +172,12 @@ SQUASHFS_PACKAGE = "squashfs-tools"
 # S3 bucket for boot images
 S3_BOOT_IMAGES_BUCKET = "s3://boot-images"
 
+# Image engine identifiers and their collision-safe artifact suffixes.
+IMAGE_BUILD_TYPE_SUFFIXES = {
+    "image-builder": "-imgbld",
+    "image-thrillhouse": "-imgth",
+}
+
 # =============================================================================
 # CONFIG VALIDATION CONSTANTS
 # =============================================================================
@@ -196,7 +197,6 @@ REQUIRED_CONFIG_FIELDS = [
 # Required files inside a dataset directory (when dataset is set)
 REQUIRED_DATASET_FILES = [
     "input/image_build_config.yml",
-    "input/image_build_credentials.yml",
 ]
 
 # Required files in src/ (when dataset is empty — default mode)

@@ -36,9 +36,11 @@ __version__ = "1.0.0"
 # --- Central config ---
 from .vars.common_vars import (
     configure,
+    configured,
     get_setting,
     init_module_root,
     get_module_root,
+    reset_configuration,
 )
 
 # --- Formatting ---
@@ -51,6 +53,8 @@ from .functions.formatting_func import (
     TestLogger,
     get_test_output,
     get_last_tc_id,
+    get_last_detail_fields,
+    clear_test_context,
     add_session_result,
     get_session_results,
     clear_session_results,
@@ -63,6 +67,7 @@ from .functions.host_func import (
     load_test_config,
     load_test_credentials,
     run_on_host,
+    run_ssh_command,
     is_local_execution,
     encrypt_test_credentials,
     connection_params,
@@ -70,6 +75,7 @@ from .functions.host_func import (
     ensure_remote_dir,
     read_remote_yaml,
     read_yaml_key,
+    resolve_domain_data_path,
     resolve_domain_input_path,
     get_inventory_hosts,
     get_inventory_host_var,
@@ -80,6 +86,8 @@ from .functions.report_func import (
     TestReport,
     get_current_report,
     set_current_report,
+    build_report_name,
+    record_playbook_failure,
 )
 
 # --- Runner ---
@@ -116,9 +124,11 @@ __all__ = [
     "__version__",
     # Config
     "configure",
+    "configured",
     "get_setting",
     "init_module_root",
     "get_module_root",
+    "reset_configuration",
     # Formatting
     "Colors",
     "Symbols",
@@ -128,6 +138,8 @@ __all__ = [
     "TestLogger",
     "get_test_output",
     "get_last_tc_id",
+    "get_last_detail_fields",
+    "clear_test_context",
     "add_session_result",
     "get_session_results",
     "clear_session_results",
@@ -137,6 +149,7 @@ __all__ = [
     "load_test_config",
     "load_test_credentials",
     "run_on_host",
+    "run_ssh_command",
     "is_local_execution",
     "encrypt_test_credentials",
     "connection_params",
@@ -144,6 +157,7 @@ __all__ = [
     "ensure_remote_dir",
     "read_remote_yaml",
     "read_yaml_key",
+    "resolve_domain_data_path",
     "resolve_domain_input_path",
     "get_inventory_hosts",
     "get_inventory_host_var",
@@ -151,6 +165,8 @@ __all__ = [
     "TestReport",
     "get_current_report",
     "set_current_report",
+    "build_report_name",
+    "record_playbook_failure",
     # Runner
     "run_playbook",
     # Sync

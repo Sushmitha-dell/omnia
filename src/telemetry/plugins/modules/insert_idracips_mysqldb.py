@@ -14,16 +14,129 @@
 
 #!/usr/bin/python
 """Module to insert iDRAC IPs into MySQL database.
-This module connects to a Kubernetes pod running MySQL and inserts iDRAC IPs with
-associated service type and authentication details.
+This module connects to a Kubernetes pod running MySQL via PyMySQL and inserts
+iDRAC IPs with associated service type and authentication details.
+It uses parameterized queries to prevent SQL injection.
 It handles retries and delays for robustness."""
 
 import time
 import json
+import pymysql
 from ansible.module_utils.basic import AnsibleModule
 from kubernetes import client, config
-from kubernetes.stream import stream
 from kubernetes.config.config_exception import ConfigException
+
+DOCUMENTATION = r'''
+---
+module: insert_idracips_mysqldb
+short_description: Insert iDRAC IPs into MySQL database in Kubernetes
+version_added: "2.3.0"
+description:
+  - Connects to MySQL pods running inside Kubernetes and inserts iDRAC IP
+    entries into the C(services) table with service type and credentials.
+  - Resolves pod IPs via the Kubernetes API and uses PyMySQL with
+    parameterized queries (INSERT IGNORE) to prevent SQL injection.
+  - Supports configurable retry count and delay for transient failures.
+options:
+  telemetry_namespace:
+    description: Kubernetes namespace where the MySQL pods are running.
+    type: str
+    required: true
+  idrac_podnames_ips:
+    description: >
+      Dictionary mapping pod names to lists of iDRAC IPs owned by that pod.
+    type: dict
+    required: true
+  mysqldb_container_port:
+    description: TCP port of the MySQL container inside the pod.
+    type: int
+    required: true
+  mysqldb_name:
+    description: Name of the MySQL database.
+    type: str
+    required: true
+  mysqldb_user:
+    description: MySQL username for authentication.
+    type: str
+    required: true
+  mysqldb_password:
+    description: MySQL password for authentication.
+    type: str
+    required: true
+  bmc_username:
+    description: BMC username stored with each iDRAC IP entry.
+    type: str
+    required: true
+  bmc_password:
+    description: BMC password stored with each iDRAC IP entry.
+    type: str
+    required: true
+  telemetry_idrac:
+    description: List of iDRAC IPs eligible for insertion (working set).
+    type: list
+    elements: str
+    required: true
+  service_type:
+    description: Service type value to store in the database.
+    type: str
+    required: true
+  auth_type:
+    description: Authentication type value to store in the database.
+    type: str
+    required: true
+  db_retries:
+    description: Number of retry attempts per IP on failure.
+    type: int
+    default: 3
+  db_delay:
+    description: Delay in seconds between retries.
+    type: int
+    default: 3
+author:
+  - Dell Technologies (@dell)
+'''
+
+EXAMPLES = r'''
+- name: Insert iDRAC IPs into MySQL for each pod
+  omnia.telemetry.insert_idracips_mysqldb:
+    telemetry_namespace: telemetry
+    idrac_podnames_ips: "{{ idrac_podname_ips }}"
+    mysqldb_container_port: 3306
+    mysqldb_name: idrac_telemetry_db
+    mysqldb_user: "{{ mysqldb_user }}"
+    mysqldb_password: "{{ mysqldb_password }}"
+    bmc_username: "{{ bmc_username }}"
+    bmc_password: "{{ bmc_password }}"
+    telemetry_idrac: "{{ telemetry_idrac }}"
+    service_type: iDRAC
+    auth_type: basic
+'''
+
+RETURN = r'''
+changed:
+  description: Whether any IPs were inserted.
+  type: bool
+  returned: always
+inserted_ips:
+  description: >
+    Dictionary mapping pod names to per-IP insertion results.
+  type: dict
+  returned: always
+  sample:
+    idrac-pod-0:
+      - ip: "192.168.1.10"
+        changed: true
+        msg: "Successfully inserted iDRAC IP 192.168.1.10 into MySQL."
+failed_ips:
+  description: List of dicts for IPs that could not be inserted.
+  type: list
+  elements: dict
+  returned: always
+  sample:
+    - pod: idrac-pod-0
+      ip: "192.168.1.11"
+      msg: "Failed after 3 attempts: Connection refused"
+'''
 
 def load_kube_context():
     """Load Kubernetes configuration for accessing the cluster."""
@@ -32,92 +145,98 @@ def load_kube_context():
     except ConfigException:
         config.load_incluster_config()
 
-def escape_single_quotes(s):
-    """Escape single quotes in a string for safe MySQL insertion."""
-    return s.replace("'", "\\'")
+def resolve_pod_ip(namespace, pod):
+    """Resolve the IP address of a Kubernetes pod via the K8s API.
+
+    Args:
+        namespace: Kubernetes namespace
+        pod: Pod name
+
+    Returns:
+        str: Pod IP address
+
+    Raises:
+        RuntimeError: If the pod IP cannot be resolved
+    """
+    core_v1 = client.CoreV1Api()
+    pod_obj = core_v1.read_namespaced_pod(name=pod, namespace=namespace)
+    pod_ip = pod_obj.status.pod_ip
+    if not pod_ip:
+        raise RuntimeError(f"Pod {pod} in namespace {namespace} has no IP assigned")
+    return pod_ip
 
 def run_mysql_insert(
     namespace,
     pod,
-    container,
-    mysqldb_name,
-    mysql_user,
-    mysql_password,
+    container_port,
+    db_name,
+    db_user,
+    db_password,
     ip,
     service_type,
     auth_type,
     auth_json
 ):
-    """Run a MySQL insert command in the specified pod."""
+    """Run a MySQL insert using a PyMySQL parameterized query.
 
-    query = (
-        f"INSERT IGNORE INTO {mysqldb_name}.services "
-        f"(ip, serviceType, authType, auth) VALUES ("
-        f"'{ip}', "
-        f"'{service_type}', "
-        f"'{auth_type}', "
-        f"'{escape_single_quotes(auth_json)}'"
-        f");"
-    )
+    Connects directly to the MySQL pod over TCP (resolved via the K8s API)
+    and executes an INSERT IGNORE with bound parameters, eliminating SQL injection.
 
-    command = [
-        "mysql", "-u", mysql_user, f"-p{mysql_password}",
-        "-e", query
-    ]
+    Args:
+        namespace: Kubernetes namespace
+        pod: Pod name
+        container_port: MySQL container port
+        db_name: MySQL database name
+        db_user: MySQL username
+        db_password: MySQL password
+        ip: iDRAC IP address to insert
+        service_type: Service type value
+        auth_type: Authentication type value
+        auth_json: JSON string of authentication credentials
 
-    core_v1 = client.CoreV1Api()
+    Returns:
+        dict: Result containing rc (bool) and result message
+    """
+    pod_ip = resolve_pod_ip(namespace, pod)
+
+    conn = None
     try:
-        ws = stream(
-            core_v1.connect_get_namespaced_pod_exec,
-            name=pod,
-            namespace=namespace,
-            container=container,
-            command=command,
-            stderr=True,
-            stdin=False,
-            stdout=True,
-            tty=False,
-            _preload_content=False  # Allows streaming access
+        conn = pymysql.connect(
+            host=pod_ip,
+            port=container_port,
+            user=db_user,
+            password=db_password,
+            database=db_name,
+            connect_timeout=10
         )
-
-        stdout = ""
-        stderr = ""
-
-        while ws.is_open():
-            ws.update(timeout=1)
-            if ws.peek_stdout():
-                stdout += ws.read_stdout()
-            if ws.peek_stderr():
-                stderr += ws.read_stderr()
-        ws.close()
-
-        rc = ws.returncode
-
-        if rc != 0:
-            return {
-                "rc": False,
-                "result": stderr.strip() or "Unknown error"
-            }
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT IGNORE INTO services (ip, serviceType, authType, auth) "
+                "VALUES (%s, %s, %s, %s)",
+                (ip, service_type, auth_type, auth_json)
+            )
+        conn.commit()
         return {
             "rc": True,
-            "result": stdout.strip()
+            "result": f"Inserted IP {ip}"
         }
-
-    except Exception as e:
-    # Catching all to ensure MySQL errors or stream failures are handled
+    except (pymysql.err.OperationalError, pymysql.err.MySQLError) as e:
         return {
-            "rc": False, 
+            "rc": False,
             "result": str(e)
         }
+    finally:
+        if conn:
+            conn.close()
 
 
 def insert_idracs_to_mysql(
     namespace,
     pod,
-    container,
-    mysqldb_name,
-    mysql_user,
-    mysql_password,
+    container_port,
+    db_name,
+    db_user,
+    db_password,
     telemetry_idrac_list,
     service_type,
     auth_type,
@@ -140,10 +259,10 @@ def insert_idracs_to_mysql(
                 result = run_mysql_insert(
                     namespace=namespace,
                     pod=pod,
-                    container=container,
-                    mysqldb_name=mysqldb_name,
-                    mysql_user=mysql_user,
-                    mysql_password=mysql_password,
+                    container_port=container_port,
+                    db_name=db_name,
+                    db_user=db_user,
+                    db_password=db_password,
                     ip=ip,
                     service_type=service_type,
                     auth_type=auth_type,
@@ -155,14 +274,14 @@ def insert_idracs_to_mysql(
                     break
                 time.sleep(delay)
             else:
-                results.append({"ip": ip, "changed": False, \
-                "msg": f"Failed after {retries} attempts: {msg}"})
+                results.append({"ip": ip, "changed": False,
+                               "msg": f"Failed after {retries} attempts: {result.get('result')}"})
         if not results:
-            results.append({"ip": "unknown", "changed": False, \
-            "msg": "No iDRAC IPs to insert."})
+            results.append({"ip": "unknown", "changed": False,
+                           "msg": "No iDRAC IPs to insert."})
     except Exception as e:
-        results.append({"ip": "unknown", "changed": False, \
-        "msg": f"An error occurred: {str(e)}"})
+        results.append({"ip": "unknown", "changed": False,
+                       "msg": f"An error occurred: {str(e)}"})
 
     return results
 
@@ -171,9 +290,9 @@ def main():
     module_args = {
         "telemetry_namespace": {"type": "str", "required": True},
         "idrac_podnames_ips": {"type": "dict", "required": True},
-        "mysqldb_k8s_name": {"type": "str", "required": True},
+        "mysqldb_container_port": {"type": "int", "required": True},
         "mysqldb_name": {"type": "str", "required": True},
-        "mysql_user": {"type": "str", "required": True, "no_log": True},
+        "mysqldb_user": {"type": "str", "required": True, "no_log": True},
         "mysqldb_password": {"type": "str", "required": True, "no_log": True},
         "bmc_username": {"type": "str", "required": True, "no_log": True},
         "bmc_password": {"type": "str", "required": True, "no_log": True},
@@ -197,10 +316,10 @@ def main():
 
     telemetry_namespace = module.params['telemetry_namespace']
     idrac_podnames_ips = module.params['idrac_podnames_ips']
-    mysqldb_k8s_name = module.params['mysqldb_k8s_name']
-    mysqldb_name = module.params['mysqldb_name']
-    mysql_user = module.params['mysql_user']
-    mysqldb_password = module.params['mysqldb_password']
+    container_port = module.params['mysqldb_container_port']
+    db_name = module.params['mysqldb_name']
+    db_user = module.params['mysqldb_user']
+    db_password = module.params['mysqldb_password']
     bmc_username = module.params['bmc_username']
     bmc_password = module.params['bmc_password']
     telemetry_idrac = module.params['telemetry_idrac']
@@ -222,10 +341,10 @@ def main():
             pod_results = insert_idracs_to_mysql(
                 namespace=telemetry_namespace,
                 pod=pod,
-                container=mysqldb_k8s_name,
-                mysqldb_name=mysqldb_name,
-                mysql_user=mysql_user,
-                mysql_password=mysqldb_password,
+                container_port=container_port,
+                db_name=db_name,
+                db_user=db_user,
+                db_password=db_password,
                 telemetry_idrac_list=working_idrac_ips,
                 service_type=service_type,
                 auth_type=auth_type,

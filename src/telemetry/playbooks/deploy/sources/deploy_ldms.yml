@@ -27,7 +27,7 @@
   gather_facts: true
   any_errors_fatal: true
   vars_files:
-    - ../../../roles/common/vars/main.yml
+    - ../../../vars/telemetry_common.yml
   pre_tasks:
     - name: Load telemetry config (only if not already loaded)
       ansible.builtin.include_role:
@@ -39,7 +39,6 @@
       ansible.builtin.include_role:
         name: common
         tasks_from: derive_sink_support_flags
-      when: kafka_support is not defined
 
     - name: Add kube_vip to inventory (only if not already added)
       ansible.builtin.add_host:
@@ -48,9 +47,9 @@
         ansible_user: root
       when: kube_vip_group is not defined
 
-    - name: Set slurm inventory file from cluster_inventory in telemetry_config
+    - name: Set slurm inventory file from resolved cluster_inventory_path
       ansible.builtin.set_fact:
-        slurm_inventory_file: "{{ hostvars['localhost']['telemetry_config'].cluster_inventory | default('') }}"
+        slurm_inventory_file: "{{ hostvars['localhost']['cluster_inventory_path'] | default('') }}"
       when: slurm_inventory_file is not defined
 
     - name: Check if slurm inventory file exists
@@ -152,7 +151,7 @@
             ansible_port: "{{ item.value.ansible_port | default(omit) }}"
             ansible_ssh_private_key_file: >-
               {{ item.value.ansible_ssh_private_key_file | default(omit) }}
-          loop: "{{ _ldms_slurm_all_hosts | dict2items }}"
+          loop: "{{ (_ldms_slurm_all_hosts | default({})) | dict2items }}"
           loop_control:
             label: "{{ item.key }}"
 
@@ -174,7 +173,7 @@
         ansible_ssh_retries: 0
       ansible.builtin.ping:
       delegate_to: "{{ item }}"
-      loop: "{{ _ldms_deploy_candidate_hosts }}"
+      loop: "{{ _ldms_deploy_candidate_hosts | default([]) }}"
       loop_control:
         label: "{{ item }}"
       register: _ldms_deploy_reachability
@@ -204,7 +203,7 @@
         _ldms_deploy_reachable_control_hosts: >-
           {{
             (groups['slurm_control_node'] | default([]))
-            | intersect(_ldms_deploy_reachable_hosts) | sort
+            | intersect(_ldms_deploy_reachable_hosts | default([])) | sort
           }}
 
     - name: Inspect munge keys on reachable Slurm control nodes
@@ -214,7 +213,7 @@
       ansible.builtin.stat:
         path: "{{ munge_key_path | default('/etc/munge/munge.key') }}"
       delegate_to: "{{ item }}"
-      loop: "{{ _ldms_deploy_reachable_control_hosts }}"
+      loop: "{{ _ldms_deploy_reachable_control_hosts | default([]) }}"
       loop_control:
         label: "{{ item }}"
       register: _ldms_deploy_control_munge_checks
@@ -264,14 +263,14 @@
       ansible.builtin.add_host:
         name: "{{ item }}"
         groups: ldms_deploy_reachable
-      loop: "{{ _ldms_deploy_reachable_hosts }}"
+      loop: "{{ _ldms_deploy_reachable_hosts | default([]) }}"
       loop_control:
         label: "{{ item }}"
 
     - name: Select the LDMS aggregator control node
       ansible.builtin.set_fact:
         _ldms_deploy_aggregator_control_host: >-
-          {{ _ldms_deploy_munge_control_hosts | first | default('') }}
+          {{ (_ldms_deploy_munge_control_hosts | default([])) | first | default('') }}
 
     - name: Add the selected LDMS aggregator control node
       ansible.builtin.add_host:
@@ -280,7 +279,7 @@
       loop: >-
         {{
           [_ldms_deploy_aggregator_control_host]
-          if _ldms_deploy_aggregator_control_host | length > 0
+          if (_ldms_deploy_aggregator_control_host | default('')) | length > 0
           else []
         }}
       loop_control:
@@ -300,7 +299,7 @@
             | combine({
                 'ldms': (
                   (_current_deploy_unreachable_nodes.ldms | default([]))
-                  + _ldms_deploy_unreachable_hosts
+                  + (_ldms_deploy_unreachable_hosts | default([]))
                 ) | unique | sort
               })
           }}
@@ -334,45 +333,28 @@
     - name: Validate required LDMS deployment nodes
       ansible.builtin.assert:
         that:
-          - _ldms_deploy_candidate_hosts | length > 0
-          - _ldms_deploy_reachable_control_hosts | length > 0
-          - _ldms_deploy_munge_control_hosts | length > 0
+          - (_ldms_deploy_candidate_hosts | default([])) | length > 0
+          - (_ldms_deploy_reachable_control_hosts | default([])) | length > 0
+          - (_ldms_deploy_munge_control_hosts | default([])) | length > 0
         fail_msg: >-
           LDMS deployment requires at least one reachable Slurm control node
           with a readable munge key. Unreachable nodes were recorded, but the
           aggregator cannot be configured safely without current
           authentication material.
   tasks:
-    - name: Check if Kafka is needed for LDMS telemetry
-      ansible.builtin.set_fact:
-        kafka_needed: "{{ 'kafka' in (telemetry_config.telemetry_sources.ldms.collection_targets | default([])) }}"
-      when: telemetry_config is defined
-
-    - name: Deploy Kafka if needed and not already deployed (standalone only)
+    - name: Deploy Kafka (handles both cluster deployment and topic management)
       ansible.builtin.include_role:
         name: deploy_kafka
       when:
-        - kafka_needed | default(false) | bool
-        - hostvars['localhost']['kafka_support'] is not defined
+        - kafka_support | default(false) | bool
+        - not (hostvars['localhost']['kafka_deployed'] | default(false) | bool)
 
-    - name: Check if VictoriaMetrics is needed for LDMS telemetry
-      ansible.builtin.set_fact:
-        victoria_metrics_needed: "{{ 'victoria_metrics' in (telemetry_config.telemetry_sources.ldms.collection_targets | default([])) }}"
-      when: telemetry_config is defined
-
-    - name: Set victoria_deployment_mode
-      ansible.builtin.set_fact:
-        victoria_deployment_mode: "cluster"
-      when:
-        - victoria_metrics_needed | default(false) | bool
-        - hostvars['localhost']['victoria_metrics_support'] is not defined
-
-    - name: Deploy VictoriaMetrics if needed and not already deployed (standalone only)
+    - name: Deploy VictoriaMetrics/VictoriaLogs (standalone run only)
       ansible.builtin.include_role:
         name: deploy_victoria
       when:
-        - victoria_metrics_needed | default(false) | bool
-        - hostvars['localhost']['victoria_metrics_support'] is not defined
+        - (victoria_metrics_support | default(false) | bool and not (hostvars['localhost']['victoria_metrics_deployed'] | default(false) | bool)) or
+          (victoria_logs_support | default(false) | bool and not (hostvars['localhost']['victoria_logs_deployed'] | default(false) | bool))
 
     - name: Include deploy_ldms role (K8s deployment only)
       ansible.builtin.include_role:
@@ -597,7 +579,7 @@
             | combine({
                 'ldms': (
                   (_current_deploy_unreachable_nodes.ldms | default([]))
-                  + _ldms_deploy_unreachable_hosts
+                  + (_ldms_deploy_unreachable_hosts | default([]))
                 ) | unique | sort
               })
           }}

@@ -30,9 +30,9 @@
     quiet: true
 
 - name: Parse network_spec data
-  ansible.builtin.set_fact:
-    network_data: "{{ network_data | default({}) | combine({item.key: item.value}) }}"
-  with_dict: "{{ Networks }}"
+  ansible.builtin.include_role:
+    name: orchestrator_common
+    tasks_from: normalize_network_spec.yml
 
 - name: Set admin network nic and ip
   ansible.builtin.set_fact:
@@ -40,6 +40,8 @@
     admin_nic: "{{ network_data.admin_network.oim_nic_name }}"
     admin_netmask_bits: "{{ network_data.admin_network.netmask_bits }}"
     ib_network_subnet: "{{ network_data.ib_network.subnet }}"
+    ib_network_netmask_bits: >-
+      {{ network_data.ib_network.netmask_bits | default('') }}
     ib_network_dns: "{{ network_data.ib_network.dns | default([]) }}"
     dns: "{{ network_data.admin_network.dns }}"
 
@@ -47,25 +49,3 @@
   ansible.builtin.set_fact:
     dns_enabled: false
   when: dns_enabled is not defined
-
-- name: Extract k8s version from catalog
-  ansible.builtin.set_fact:
-    service_k8s_version: >-
-      {% set fl_name = catalog_data.catalog.functionallayer
-         | selectattr('name', 'match', '.*kube.*|.*k8s.*')
-         | map(attribute='name')
-         | first
-         | default('') -%}
-      {% set fl_ver = fl_name | regex_search('[0-9]+\\.[0-9]+\\.[0-9]+')
-         | default('', true) -%}
-      {% set pkg_ver = (catalog_data.catalog.packages.kubeadm.name
-         | default('')
-         | regex_search('[0-9]+\\.[0-9]+\\.[0-9]+')
-         | default('', true))
-         if (catalog_data.catalog.packages is defined and
-             catalog_data.catalog.packages.kubeadm is defined)
-         else '' -%}
-      {{ fl_ver if fl_ver else pkg_ver }}
-  when:
-    - service_k8s_support | default(false) | bool
-    - catalog_data is defined

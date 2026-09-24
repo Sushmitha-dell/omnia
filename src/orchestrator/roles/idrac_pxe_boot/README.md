@@ -17,7 +17,7 @@ issuing boot configuration and power commands.
 
 ## Inventory Format
 
-Inventory must include BMC IPs in the `[bmc]` group. For phone-home verification,
+Inventory must include BMC IPs in the `[bmc]` group. For node-registration verification,
 also include `admin_ip` and `hostname` as host variables:
 
 ```ini
@@ -72,7 +72,8 @@ None.
 ```
 
 Credentials are expected to be loaded on `localhost` before this role runs
-(e.g., via the `collect_pxe_credentials` role).
+(for example, from the project-scoped Orchestrator credential store used by
+`playbooks/pxeboot/pxeboot.yml`).
 
 ## Tasks
 

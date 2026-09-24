@@ -50,6 +50,7 @@ DOMAIN_NAME = "telemetry"
 
 # Environment variable names on the target host
 ENV_OMNIA_DATA_PATH = "OMNIA_DATA_PATH"
+ENV_TELEMETRY_DATA_PATH = "TELEMETRY_DATA_PATH"
 ENV_OMNIA_PROJECT_NAME = "OMNIA_PROJECT_NAME"
 
 # =============================================================================
@@ -75,6 +76,7 @@ PLAYBOOK_TAGS = [
     "upgrade",
     "rollback",
     "external_kafka",
+    "external_victoria",
 ]
 
 # =============================================================================
@@ -116,6 +118,25 @@ KAFKA_POD_PREFIXES = {
 KAFKA_BRIDGE_PREFIX = "bridge-bridge"
 KAFKA_CR_NAME = "kafka"
 KAFKA_EXTERNAL_BOOTSTRAP_SVC = "kafka-kafka-external-bootstrap"
+
+# =============================================================================
+# SOURCE-TO-SINKS MAPPING
+# =============================================================================
+# Maps each telemetry source to the sinks it can target.
+# Used for source-specific sink enablement checks in tests.
+#
+# Format: source_name -> [list of possible sink names]
+# This allows tests to verify if a specific source targets a specific sink.
+
+SOURCE_SINK_MAPPING = {
+    "idrac": ["kafka", "victoria_metrics"],
+    "ldms": ["kafka"],
+    "powerscale": ["victoria_metrics", "victoria_logs"],
+    "ufm": ["victoria_metrics", "victoria_logs"],
+    "vast": ["victoria_metrics", "victoria_logs"],
+    "ome": ["kafka"],  # OME publishes to Kafka; Vector-OME bridge routes to Victoria
+    "sfm": ["victoria_metrics"],  # SFM uses Prometheus Remote Write to victoria_metrics
+}
 
 # =============================================================================
 # SOURCE COMPONENT NAMES
@@ -215,48 +236,76 @@ SVC_PORT_NAME_HTTP = "http"
 VECTOR_LDMS_APP_NAME = "vector-ldms"
 VECTOR_OME_APP_NAME = "vector-ome"
 
-# UFM (from deploy_ufm/vars/main.yml)
-UFM_SVC_NAME = "ufm-external"
-UFM_VMSCRAPE_NAME = "ufm-infiniband-metrics"
-# K8s Secret object name, not a credential value
-UFM_SECRET_NAME = "ufm-telemetry-credentials"  # noqa: S105
-UFM_EXPECTED_METRICS = [
-    "infiniband_CBW",
-    "PortXmitDataExtended",
-    "PortRcvDataExtended",
-    "PortXmitPktsExtended",
-    "PortRcvPktsExtended",
-    "LinkDownedCounterExtended",
-]
-
-# Telemetry config key paths for UFM
-CFG_KEY_UFM_METRICS_ENABLED = "telemetry_sources.ufm.metrics_enabled"
-CFG_KEY_UFM_ENDPOINT = "ufm_configuration.ufm_endpoint"
-CFG_KEY_UFM_PORT = "ufm_configuration.ufm_metrics_port"
-
 # VAST (from deploy_vast/vars/main.yml)
 VAST_SVC_NAME = "vast-external"
 VAST_VMSCRAPE_NAME = "vast-storage-metrics"
 # K8s Secret object name, not a credential value
 VAST_SECRET_NAME = "vast-telemetry-credentials"  # noqa: S105
-# Expected VAST metrics based on documentation and screenshot
-# The screenshot shows: vast_cluster_metrics_EStoreMigrateMetrics_physical_size_count
-VAST_EXPECTED_METRICS = [
-    "vast_read_throughput",
-    "vast_write_throughput",
-    "vast_read_iops",
-    "vast_write_iops",
-    "vast_capacity_total_bytes",
-    "vast_capacity_used_bytes",
-    "vast_capacity_avail_bytes",
-    "vast_cluster_metrics_EStoreMigrateMetrics_physical_size_count",
-]
+VAST_METRIC_SELECTOR = (
+    '{source_subsystem="vast",job="vast-storage-metrics",'
+    '__name__=~"vast_.+"}'
+)
+VAST_SCRAPE_HEALTH_QUERY = 'up{job="vast-storage-metrics"}'
+VAST_SCRAPE_SAMPLES_QUERY = (
+    'scrape_samples_scraped{job="vast-storage-metrics"}'
+)
+VAST_METRIC_FRESHNESS_SECONDS = 300
+VAST_MAX_METRICS_SHOWN = 5
+VAST_SYSLOG_PORT_NAME = "syslog"
+VAST_SYSLOG_PROTOCOL = "tcp"
+VAST_SYSLOG_REQUIRED_SETTINGS = {
+    "disable_actions": False,
+    "syslog_vms_audit": True,
+}
+VAST_CREDENTIALS_FILE = "telemetry_credentials.yml"
+VAST_CREDENTIALS_KEY_FILE = ".telemetry_credentials_key"
+VAST_CREDENTIAL_FIELDS = {
+    "username": "vast_username",
+    "password": "vast_password",
+}
+VAST_API_SCHEME = "https"
+VAST_API_PATHS = {
+    "token": "/api/token/",
+    "config_list": "/api/eventdefinitionconfigs/",
+    "config_detail": "/api/eventdefinitionconfigs/{config_id}/",
+    "config_test": "/api/eventdefinitionconfigs/{config_id}/test/",
+}
+VAST_API_TIMEOUT_SECONDS = 30
+VAST_API_LOGIN_STATUS = (200,)
+VAST_API_READ_STATUS = (200,)
+VAST_API_UPDATE_STATUS = (200,)
+VAST_API_TRIGGER_STATUS = (200,)
+VAST_AUTH_MODES = ("basic", "none")
+VAST_TLS_MODES = ("self_signed", "ca_signed")
+VAST_MAX_CREDENTIAL_FILE_BYTES = 64 * 1024
+VAST_MAX_KEY_FILE_BYTES = 4 * 1024
+VAST_MAX_CA_FILE_BYTES = 1024 * 1024
+VAST_MAX_STATE_FILE_BYTES = 4 * 1024
+VAST_LOG_APP_NAME = "vast_event"
+VAST_LOG_QUERY = f'app_name:="{VAST_LOG_APP_NAME}"'
+VAST_LOG_QUERY_LIMIT = 100
+VAST_MAX_LOG_EVENTS_SHOWN = 5
+VAST_LOG_FIELD_PREVIEW_LENGTH = 120
+VAST_LOG_POLL_ATTEMPTS = 18
+VAST_LOG_POLL_INTERVAL_SECONDS = 5
+VAST_LOG_CLOCK_SKEW_SECONDS = 15
+VAST_LOG_MAX_FUTURE_SKEW_SECONDS = 30
+VAST_TRIGGER_STATE_SCHEMA_VERSION = 1
+VAST_TRIGGER_STATE_SUBDIR = os.path.join("reports", "state")
+VAST_TRIGGER_STATE_FILE = "vast_syslog_{run_id}.json"
+VAST_TRIGGER_MAX_AGE_SECONDS = 3600
+VAST_REPORT_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+VAST_QUERY_TIMEOUT_SECONDS = 30
 
 # Telemetry config key paths for VAST
 CFG_KEY_VAST_METRICS_ENABLED = "telemetry_sources.vast.metrics_enabled"
 CFG_KEY_VAST_LOGS_ENABLED = "telemetry_sources.vast.logs_enabled"
+CFG_KEY_VAST_COLLECTION_TARGETS = "telemetry_sources.vast.collection_targets"
 CFG_KEY_VAST_ENDPOINT = "vast_configuration.vast_endpoint"
 CFG_KEY_VAST_PORT = "vast_configuration.vast_metrics_port"
+CFG_KEY_VAST_AUTH_MODE = "vast_configuration.auth_mode"
+CFG_KEY_VAST_TLS_MODE = "vast_configuration.tls_mode"
+CFG_KEY_VAST_CA_CERT_PATH = "vast_configuration.vast_ca_cert_path"
 
 # Telemetry sources list
 TELEMETRY_SOURCES = [
@@ -391,6 +440,17 @@ CMDS = {
         " -o jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'"
         " 2>/dev/null"
     ),
+    "kubectl_get_kafka_ready_status": (
+        "kubectl get kafka kafka -n {namespace}"
+        " -o jsonpath='{{.status.conditions[?(@.type==\"Ready\")].status}}'"
+        " 2>/dev/null"
+    ),
+
+    # --- VictoriaMetrics ---
+    "kubectl_get_vmcluster_update_status": (
+        "kubectl get vmcluster -n {namespace}"
+        " -o jsonpath='{{.items[0].status.updateStatus}}' 2>/dev/null"
+    ),
 
     # --- KafkaUser ---
     "kubectl_get_kafkauser": (
@@ -460,11 +520,14 @@ CMDS = {
         "curl -sk 'https://{vmselect_ip}:{vmselect_port}"
         "/select/0/prometheus/api/v1/query?query={query}'"
     ),
-
+    "vast_vm_query_instant": (
+        "curl -skf --max-time {timeout} 'https://{vmselect_ip}:{vmselect_port}"
+        "/select/0/prometheus/api/v1/query?query={query}'"
+    ),
     # --- iDRAC VictoriaMetrics data ---
     "vm_query_idrac_service_tag": (
-        "curl -s --max-time 15"
-        " 'http://{vmselect_ip}:{vmselect_port}"
+        "curl -sk --max-time 15"
+        " 'https://{vmselect_ip}:{vmselect_port}"
         "/select/0/prometheus/api/v1/query?query={encoded_query}'"
     ),
 
@@ -472,6 +535,10 @@ CMDS = {
     "vl_query_logs": (
         "curl -sk 'https://{vlselect_ip}:{vlselect_port}"
         "/select/logsql/query?query={query}&limit={limit}&start=-{range}'"
+    ),
+    "vast_vl_query_logs": (
+        "curl -skf --max-time {timeout} 'https://{vlselect_ip}:{vlselect_port}"
+        "/select/logsql/query?query={query}&limit={limit}&start={start}'"
     ),
 
     # --- Service external IP ---
@@ -495,113 +562,6 @@ CMDS = {
         " 2>/dev/null"
     ),
 
-    # --- OME REST API ---
-    "ome_get_forwarder": (
-        "curl -sk -u '{user}:{password}' --max-time 15"
-        " 'https://{ome_ip}/api/DataForwardingService/"
-        "Forwarders({forwarder_id})'"
-    ),
-    "ome_get_forwarder_status": (
-        "curl -sk -u '{user}:{password}' --max-time 15"
-        " 'https://{ome_ip}/api/DataForwardingService/"
-        "Forwarders({forwarder_id})/ConnectivityStatus'"
-    ),
-    "ome_get_forwarders_list": (
-        "curl -sk -u '{user}:{password}' --max-time 15"
-        " 'https://{ome_ip}/api/DataForwardingService/Forwarders'"
-    ),
-
-    # --- OpenSSL ---
-    "openssl_create_pfx": (
-        "openssl pkcs12 -export"
-        " -out {cert_dir}/user.pfx"
-        " -inkey {cert_dir}/user.key"
-        " -in {cert_dir}/user.crt"
-        " -passout pass:{password} 2>&1"
-    ),
-
-    # --- OME REST API: upload certificates ---
-    # Upload server certificate (CA cert) - X.509 format, base64 encoded
-    "ome_upload_server_cert": (
-        "curl -sk -u '{user}:{password}' --max-time 30"
-        " -X POST"
-        " -H 'Content-Type: application/json'"
-        " -d '{{\"CertData\": \"{cert_data_b64}\","
-        " \"CertFormat\": \"X_509\","
-        " \"ClientType\": \"KAFKA\"}}'"
-        " 'https://{ome_ip}/api/ApplicationService/"
-        "Actions/ApplicationService.UploadServerCertificate'"
-        " -w '\\nHTTP_CODE:%{{http_code}}'"
-    ),
-    # Upload client certificate (PFX) - PKCS12 format, base64 encoded
-    "ome_upload_client_cert": (
-        "curl -sk -u '{user}:{password}' --max-time 30"
-        " -X POST"
-        " -H 'Content-Type: application/json'"
-        " -d '{{\"CertData\": \"{cert_data_b64}\","
-        " \"CertFormat\": \"PKCS_12\","
-        " \"ClientType\": \"KAFKA\","
-        " \"Passphrase\": \"{pfx_secret}\"}}'"
-        " 'https://{ome_ip}/api/ApplicationService/"
-        "Actions/ApplicationService.UploadClientCertificate'"
-        " -w '\\nHTTP_CODE:%{{http_code}}'"
-    ),
-    # View client certificate
-    "ome_view_client_cert": (
-        "curl -sk -u '{user}:{password}' --max-time 15"
-        " -X POST"
-        " -H 'Content-Type: application/json'"
-        " -d '{{\"ClientType\": \"KAFKA\"}}'"
-        " 'https://{ome_ip}/api/ApplicationService/"
-        "Actions/ApplicationService.ViewClientCertificate'"
-    ),
-    # Test Kafka connection
-    "ome_test_kafka_connection": (
-        "curl -sk -u '{user}:{password}' --max-time 30"
-        " -X POST"
-        " -H 'Content-Type: application/json'"
-        " -d '{{\"Id\": {forwarder_id},"
-        " \"ForwarderConfigurations\": ["
-        "{{\"ConfigurationName\": \"OMEIdentifier\", "
-        "\"ConfigurationValue\": \"{ome_identifier}\"}},"
-        "{{\"ConfigurationName\": \"ClientType\", \"ConfigurationValue\": \"KAFKA\"}},"
-        "{{\"ConfigurationName\": \"BrokerList\", \"ConfigurationValue\": \"{broker_list}\"}},"
-        "{{\"ConfigurationName\": \"AuthMode\", \"ConfigurationValue\": \"2\"}},"
-        "{{\"ConfigurationName\": \"ServerCert\", \"ConfigurationValue\": \"true\"}},"
-        "{{\"ConfigurationName\": \"ClientCert\", \"ConfigurationValue\": \"true\"}}"
-        "]}}'"
-        " 'https://{ome_ip}/api/DataForwardingService/"
-        "Actions/DataForwardingService.TestConnection'"
-        " -w '\\nHTTP_CODE:%{{http_code}}'"
-    ),
-    # Update forwarder settings
-    "ome_update_forwarder_settings": (
-        "curl -sk -u '{user}:{password}' --max-time 30"
-        " -X POST"
-        " -H 'Content-Type: application/json'"
-        " -d '{{\"Id\": {forwarder_id},"
-        " \"Enabled\": true,"
-        " \"ForwarderConfigurations\": ["
-        "{{\"ConfigurationName\": \"OMEIdentifier\", "
-        "\"ConfigurationValue\": \"{ome_identifier}\"}},"
-        "{{\"ConfigurationName\": \"ClientType\", \"ConfigurationValue\": \"KAFKA\"}},"
-        "{{\"ConfigurationName\": \"BrokerList\", \"ConfigurationValue\": \"{broker_list}\"}},"
-        "{{\"ConfigurationName\": \"AuthMode\", \"ConfigurationValue\": \"2\"}},"
-        "{{\"ConfigurationName\": \"ServerCert\", \"ConfigurationValue\": \"true\"}},"
-        "{{\"ConfigurationName\": \"ClientCert\", \"ConfigurationValue\": \"true\"}},"
-        "{{\"ConfigurationName\": \"HeartBeat\", \"ConfigurationValue\": \"120\"}}"
-        "]}}'"
-        " 'https://{ome_ip}/api/DataForwardingService/"
-        "Actions/DataForwardingService.ForwarderSettings'"
-        " -w '\\nHTTP_CODE:%{{http_code}}'"
-    ),
-    # Get forwarder configuration
-    "ome_get_forwarder_config": (
-        "curl -sk -u '{user}:{password}' --max-time 15"
-        " 'https://{ome_ip}/api/DataForwardingService/"
-        "Forwarders({forwarder_id})/ForwarderConfigurations'"
-    ),
-
     # --- PowerScale syslog config via SSH ---
     "powerscale_syslog_view": (
         "sshpass -p '{password}'"
@@ -615,15 +575,23 @@ CMDS = {
         " {user}@{host}"
         " '{isi_cmd}'"
     ),
+    "powerscale_get_privileges": "isi auth privileges",
+    "powerscale_get_privileges_password": (
+        "sshpass -p %s ssh -o StrictHostKeyChecking=accept-new"
+        " -o PubkeyAuthentication=no -o ConnectTimeout=10 -- %s %s"
+    ),
 
     # --- Cleanup verification ---
     "kubectl_count_resources": (
         "kubectl get {resource} -n {namespace}"
         " --no-headers --ignore-not-found 2>/dev/null | wc -l"
     ),
+    "kubectl_get_pvc_count": (
+        "kubectl get pvc -n {namespace}"
+        " --no-headers --ignore-not-found 2>/dev/null | grep {prefix} | wc -l"
+    ),
     "kubectl_get_ns": (
         "kubectl get namespace {namespace}"
         " --no-headers --ignore-not-found 2>/dev/null"
     ),
 }
-

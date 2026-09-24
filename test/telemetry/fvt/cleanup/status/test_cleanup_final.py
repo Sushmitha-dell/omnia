@@ -19,8 +19,9 @@ Verifies that no pods or PVCs remain in the telemetry namespace after
 a full cleanup has completed.
 
 Test cases:
-    TC_CL_012: Verify no pods remain after full cleanup
-    TC_CL_013: Verify no PVCs remain after full cleanup
+    TEL_FVT_CLEANUP_V012: Verify no pods remain after full cleanup
+    TEL_FVT_CLEANUP_V013: Verify no PVCs remain after full cleanup
+    TEL_FVT_CLEANUP_V014: Verify sink PVCs are preserved after cleanup
 """
 
 import pytest
@@ -34,14 +35,16 @@ from library.messages.telemetry_msgs import (
 )
 from library.functions.cleanup_func import (
     verify_no_pods_remaining,
-    verify_no_pvcs_remaining,
+    verify_pvcs_preserved,
+    verify_source_pvcs_deleted,
+    verify_sink_pvcs_deleted,
 )
 
 
 @pytest.mark.sanity
 @pytest.mark.order(61)
 def test_no_pods_after_full_cleanup(host):
-    """TC_CL_012: Verify no pods remain in telemetry namespace.
+    """TEL_FVT_CLEANUP_V012: Verify no pods remain in telemetry namespace.
 
     After a full cleanup (--tags cleanup), the telemetry namespace
     should contain zero pods.
@@ -66,25 +69,57 @@ def test_no_pods_after_full_cleanup(host):
 
 @pytest.mark.sanity
 @pytest.mark.order(62)
-def test_no_pvcs_after_full_cleanup(host):
-    """TC_CL_013: Verify no PVCs remain in telemetry namespace.
+def test_no_pvcs_after_full_cleanup(host, delete_sinks_volume):
+    """TEL_FVT_CLEANUP_V013/TEL_FVT_CLEANUP_V014: Verify cleanup PVC state.
 
-    After a full cleanup (--tags cleanup), the telemetry namespace
-    should contain zero PersistentVolumeClaims.
+    After a full cleanup (--tags cleanup):
+      - With delete_sinks_volume=true: zero PVCs must remain (all deleted).
+      - With delete_sinks_volume=false: sink PVCs must be preserved and
+        source PVCs must be deleted.
     """
-    tc = TC["no_pvcs_after_full_cleanup"]
+    case_key = (
+        "no_pvcs_after_full_cleanup"
+        if delete_sinks_volume
+        else "pvcs_preserved_after_cleanup"
+    )
+    tc = TC[case_key]
     tl = TestLogger(tc["title"], tc["id"])
 
-    result = verify_no_pvcs_remaining(host)
-
-    if result["success"]:
-        tl.passed(LOG_MSGS["no_pvcs_remaining"], result["details"])
-    else:
+    tl.check("Verifying source PVCs were deleted during cleanup")
+    result_source = verify_source_pvcs_deleted(host)
+    if not result_source["success"]:
         tl.failed(
-            LOG_MSGS["pvcs_remaining"].format(count=result["count"]),
-            result["details"],
+            LOG_MSGS["pvcs_remaining"].format(count=result_source["count"]),
+            result_source["details"],
         )
-
-    assert result["success"], ASSERT_MSGS["pvcs_remaining"].format(
-        count=result["count"],
+    assert result_source["success"], (
+        f"Source PVCs were not deleted: {result_source['error']}"
     )
+
+    if delete_sinks_volume:
+        tl.check("Verifying sink PVCs were deleted during cleanup")
+        result_sink = verify_sink_pvcs_deleted(host)
+        if result_sink["success"]:
+            tl.passed(
+                LOG_MSGS["no_pvcs_remaining"],
+                f"{result_source['details']}\n{result_sink['details']}",
+            )
+        else:
+            tl.failed(
+                LOG_MSGS["pvcs_remaining"].format(count=result_sink["count"]),
+                result_sink["details"],
+            )
+        assert result_sink["success"], (
+            f"Sink PVCs were not deleted: {result_sink['error']}"
+        )
+    else:
+        tl.check("Verifying sink PVCs were preserved during cleanup")
+        result = verify_pvcs_preserved(host)
+        if result["success"]:
+            tl.passed(LOG_MSGS["pvcs_preserved"], result["details"])
+        else:
+            tl.failed(
+                LOG_MSGS["pvcs_not_preserved"],
+                result["details"],
+            )
+        assert result["success"], ASSERT_MSGS["pvcs_not_preserved"]

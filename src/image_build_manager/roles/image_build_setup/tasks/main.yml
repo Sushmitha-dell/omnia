@@ -33,6 +33,7 @@
 - name: Include prerequisite file validation
   ansible.builtin.include_tasks: validate_prereqs.yml
   when:
+    - not (image_build_cleanup_mode | default(false) | bool)
     - "'cleanup' not in (provided_tags | default([]))"
     - "'cleanup_images' not in (provided_tags | default([]))"
     - "'precheck' not in (provided_tags | default([]))"
@@ -40,6 +41,7 @@
 - name: Include repo_status loading and repo list building
   ansible.builtin.include_tasks: load_repo_status.yml
   when:
+    - not (image_build_cleanup_mode | default(false) | bool)
     - "'cleanup' not in (provided_tags | default([]))"
     - "'cleanup_images' not in (provided_tags | default([]))"
     - "'precheck' not in (provided_tags | default([]))"
@@ -60,7 +62,7 @@
       - "Package source: {{ functional_groups_source | default('config') }}"
       - "Catalog file: {{ catalog_file | default('(not set)') }}"
       - "Repo cert: {{ repo_cert_path | default('(skipped for cleanup)') }}"
-      - "Image build type: {{ image_build_type | default('image-builder') }}"
+      - "Image build type: {{ image_build_type | default('image-thrillhouse') }}"
       - "Max parallel: {{ build_image_max_parallel | default(0) }}"
       - "x86_64 repos: {{ repo_manager_repos_x86_64 | default([]) | length }}"
       - "aarch64 repos: {{ repo_manager_repos_aarch64 | default([]) | length }}"

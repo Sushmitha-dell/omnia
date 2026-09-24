@@ -26,6 +26,7 @@ Provides:
 
 import sys
 import os
+from datetime import datetime
 
 import pytest
 
@@ -53,6 +54,7 @@ from omnia_auto import (  # noqa: E402
     get_test_output,
     get_last_tc_id,
     encrypt_test_credentials,
+    build_report_name,
     log,
     set_verbose_mode,
     add_session_result,
@@ -106,6 +108,7 @@ def pytest_configure(config):
         "functional": "Functional verification",
         "regression": "Regression tests",
         "deploy": "Playbook deployment tests",
+        "nft": "Non-functional tests (performance, idempotency)",
     }
     for name, desc in markers.items():
         config.addinivalue_line("markers", f"{name}: {desc}")
@@ -228,13 +231,19 @@ def pytest_sessionstart(session):
                 module_name = part
                 break
 
-    report_id = os.environ.get("REPORT_ID")
+    configured_id = str(config.get("run_id") or "").strip()
+    run_id = configured_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.environ["RUN_ID"] = run_id
+    base_name = str(config.get("report_name", "discovery_test_report"))
+    report_name = build_report_name(
+        base_name=base_name,
+    )
     report = TestReport(
         module_name=module_name,
         report_path=str(config.get("report_path", "/opt/omnia/reports")),
-        report_name=str(config.get("report_name", "discovery_test_report")),
+        report_name=report_name,
         server_ip=str(config.get("oim_server_ip", "localhost")),
-        report_id=report_id,
+        run_id=run_id,
     )
     set_current_report(report)
 

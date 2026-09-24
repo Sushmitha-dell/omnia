@@ -262,22 +262,26 @@
           content: |
             #!/bin/bash
             MARKER="/var/log/track/slurm_controller_track"
+            WAIT_TIMEOUT_SECONDS=1800
+            WAIT_INTERVAL_SECONDS=5
             if [ -f "$MARKER" ]; then
               echo "Slurm controller track file already exists. Skipping."
               exit 0
             fi
 
             echo "Waiting for slurmctld to become active..."
-            while true; do
+            deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
+            while ((SECONDS < deadline)); do
               if systemctl is-active --quiet slurmctld; then
                 echo "Slurm controller is active."
                 touch "$MARKER"
                 exit 0
-              else
-                echo "slurmctld is not active yet. Retrying in 5 seconds."
               fi
-              sleep 5
+              echo "slurmctld is not active yet. Retrying in ${WAIT_INTERVAL_SECONDS} seconds."
+              sleep "$WAIT_INTERVAL_SECONDS"
             done
+            echo "ERROR: slurmctld did not become active within ${WAIT_TIMEOUT_SECONDS} seconds." >&2
+            exit 1
 
         - path: /tmp/apptainer_mirror.conf
           permissions: '0644'
@@ -289,8 +293,33 @@
 {% if dns_enabled | default(false) | bool %}
         - |
           # Restore CoreDNS resolv.conf after set-ssh.sh (nmcli con up may overwrite it)
-          printf 'search {{ domain_name }}\nnameserver {{ admin_nic_ip }}\noptions timeout:1 attempts:2\n' > /etc/resolv.conf
-          chattr +i /etc/resolv.conf || true
+          resolv_target=$(readlink -f /etc/resolv.conf 2>/dev/null || true)
+          [ -n "$resolv_target" ] || resolv_target=/etc/resolv.conf
+          resolv_tmp=$(mktemp "$(dirname "$resolv_target")/.resolv.conf.XXXXXX")
+          trap 'rm -f "$resolv_tmp"' EXIT
+          printf 'search {{ domain_name }}\nnameserver {{ admin_nic_ip }}\noptions timeout:1 attempts:2\n' > "$resolv_tmp"
+          if [ -e "$resolv_target" ]; then
+            chown --reference="$resolv_target" "$resolv_tmp"
+            chmod --reference="$resolv_target" "$resolv_tmp"
+          else
+            chmod 0644 "$resolv_tmp"
+          fi
+          if command -v chattr >/dev/null 2>&1; then
+            chattr -i "$resolv_target" || true
+          fi
+          if ! mv -f -- "$resolv_tmp" "$resolv_target"; then
+            echo "ERROR: Failed to atomically replace $resolv_target" >&2
+            if command -v chattr >/dev/null 2>&1; then
+              chattr +i "$resolv_target" || true
+            fi
+            rm -f "$resolv_tmp"
+            trap - EXIT
+            exit 1
+          fi
+          if command -v chattr >/dev/null 2>&1; then
+            chattr +i "$resolv_target" || true
+          fi
+          trap - EXIT
 {% endif %}
         # DOCA prerequisites - moved early to ensure RDMA is ready before vendor_data mounts
         - mkdir -p {{ client_mount_path }}/slurm/ssh
@@ -308,23 +337,8 @@
         - {{ cmd }}
 {% endfor %}
 {% endif %}
-{% raw %}
-      {% if ds.meta_data.instance_data.v1.vendor_data.groups.ssh.host_mount_map is mapping and ds.meta_data.instance_data.v1.vendor_data.groups.ssh.host_mount_map %}
-      {% set mymounts = ds.meta_data.instance_data.v1.vendor_data.groups.ssh.host_mount_map.get(local_hostname, {}) %}
-      {% if mymounts %}
-      {% for mount in mymounts.get("mounts", []) %}
-        - mkdir -pv {{"{{"}} mount[1] {{"}}"}}
-        - echo "{{"{{"}} mount | join(' ') {{"}}"}}" >> /etc/fstab
-      {% endfor %}
-        - mount -av
-      {% for decoded_cmd in mymounts.get("runcmd", []) %}
-        - {{"{{"}} decoded_cmd {{"}}"}}
-      {% endfor %}
-      {% else %}
-        - echo "No mount entries found for this host"
-      {% endif %}
-      {% endif %}
-{% endraw %}
+{# mount_config host_mount_map block removed - incompatible with Pongo2 validation #}
+{# When mount_config bolt-on is needed, implement as a shell script in write_files #}
 {% set fg_swap = metadata_svc_groups_dict.get(functional_group_name, {}).get('swap', {}) %}
 {% include 'configure_swap.yaml.j2' %}
         - mount -av

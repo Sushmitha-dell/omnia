@@ -70,12 +70,8 @@ TEST_LOG_MSGS = {
     "ldms_not_cleaned": "{count} LDMS pod(s) still present",
     "ome_cleaned": "No OME pods remaining",
     "ome_not_cleaned": "{count} OME pod(s) still present",
-    "ufm_cleaned": "No UFM resources remaining",
-    "ufm_not_cleaned": "UFM resources still present",
     "vast_cleaned": "No VAST resources remaining",
     "vast_not_cleaned": "VAST resources still present",
-    "sfm_cleaned": "No SFM pods remaining",
-    "sfm_not_cleaned": "{count} SFM pod(s) still present",
 
     # Cleanup - Sinks
     "kafka_cleaned": "No Kafka pods remaining",
@@ -88,14 +84,54 @@ TEST_LOG_MSGS = {
     # Cleanup - Final State
     "no_pods_remaining": "No pods remaining in telemetry namespace",
     "pods_remaining": "{count} pod(s) still present in telemetry namespace",
-    "no_pvcs_remaining": "No PVCs remaining in telemetry namespace",
+    "no_pvcs_remaining": "No PVCs remaining in telemetry namespace (Delete_volume=true)",
     "pvcs_remaining": "{count} PVC(s) still present in telemetry namespace",
+    "pvcs_preserved": "PVCs preserved in telemetry namespace (Delete_volume=false)",
+    "pvcs_not_preserved": "PVCs were deleted despite Delete_volume=false",
 
     # Cleanup - Idempotency / Playbook
     "cleanup_failed": "Cleanup playbook failed",
     "deploy_failed": "Deploy playbook failed",
     "idempotent_passed": "Idempotency verified: second run exited 0 (duration={duration}s)",
     "idempotent_failed": "Idempotency failed: second run exited {rc}",
+
+    # Resilience - Pod Recovery
+    "pod_recovery_passed": "Pod '{prefix}' recovered successfully in {elapsed}s",
+    "pod_recovery_failed": "Pod '{prefix}' failed to recover: {error}",
+    "sts_recovery_passed": "StatefulSet pods recovered: {prefixes}",
+    "sts_recovery_failed": "StatefulSet pod recovery failed: {prefixes}",
+
+    # Resilience - PVC Persistence
+    "pvcs_bound": "All {total} PVCs in Bound state ({bound} bound)",
+    "pvcs_not_bound": "{not_bound} of {total} PVC(s) not in Bound state",
+
+    # Resilience - Service Endpoints
+    "services_available": "All {count} core services have active endpoints",
+    "services_unavailable": "Services missing endpoints: {unavailable}",
+
+    # Resilience - Data Continuity
+    "data_queryable": "VictoriaMetrics returned {count} result(s) for '{query}'",
+    "data_not_queryable": "VictoriaMetrics query '{query}' returned no data: {error}",
+
+    # Resilience - Node Reboot
+    "node_reboot_passed": (
+        "Node {node_ip} rebooted; {total} pods Running after {elapsed}s"
+    ),
+    "node_reboot_failed": "Node {node_ip} did not come back after reboot",
+    "node_reboot_pods_failed": (
+        "After reboot: {running}/{total} pods Running (some not ready)"
+    ),
+
+    # Resilience - Full Lifecycle
+    "lifecycle_passed": (
+        "Full lifecycle passed: cleanup={cleanup_dur}s, "
+        "deploy={deploy_dur}s, {total} pods Running"
+    ),
+    "lifecycle_failed": "{not_running} pod(s) not Running after full lifecycle",
+
+    # Resilience - Operator Recovery
+    "operator_recovery_passed": "All operators recovered and CRs reconciled",
+    "operator_recovery_failed": "Operator recovery or CR reconciliation failed",
 
     # All pods running
     "all_pods_running": "All {total} pods running in telemetry namespace",
@@ -137,16 +173,6 @@ TEST_LOG_MSGS = {
 
     # Config skip
     "source_disabled": "{source} source not enabled in telemetry_config.yml",
-
-    # UFM
-    "ufm_svc_exists": "UFM external service '{service}' exists with endpoint {endpoint}",
-    "ufm_svc_missing": "UFM external service '{service}' not found",
-    "ufm_vmscrape_exists": "UFM VMServiceScrape '{name}' exists",
-    "ufm_vmscrape_missing": "UFM VMServiceScrape '{name}' not found",
-    "ufm_secret_exists": "UFM credentials secret '{secret}' exists",
-    "ufm_secret_missing": "UFM credentials secret '{secret}' not found",
-    "ufm_metrics_found": "{count} UFM metric(s) found in VictoriaMetrics",
-    "ufm_metrics_missing": "Missing UFM metrics in VictoriaMetrics: {missing}",
 
     # PowerScale / VictoriaMetrics / VictoriaLogs
     "secret_valid": "Secret '{secret}' has correct endpoint: {endpoint}",
@@ -209,9 +235,17 @@ TEST_LOG_MSGS = {
     "vast_metrics_found": (
         "{count} VAST metric(s) found in VictoriaMetrics"
     ),
-    "vast_metrics_missing": "Missing VAST metrics in VictoriaMetrics: {missing}",
-    "vast_logs_found": "{count} VAST log entries found in VictoriaLogs",
-    "vast_logs_missing": "No VAST logs found in VictoriaLogs",
+    "vast_metrics_missing": "VAST metrics pipeline verification failed",
+    "vast_syslog_configured": (
+        "VAST syslog configured and test event accepted"
+    ),
+    "vast_syslog_configuration_failed": (
+        "VAST syslog configuration or test event failed"
+    ),
+    "vast_logs_found": (
+        "{count} fresh VAST test event(s) found in VictoriaLogs"
+    ),
+    "vast_logs_missing": "Fresh VAST test event not found in VictoriaLogs",
 
     # Online/Offline Mode
     "config_value_correct": "Configuration value correct: {key}={value}",
@@ -298,7 +332,8 @@ TEST_ASSERT_MSGS = {
         "MySQL data missing in {count} iDRAC pod(s)\n"
         "HOW TO FIX:\n"
         "  1. kubectl exec <pod> -n telemetry -c mysqldb -- "
-        "mysql -e 'SELECT * FROM idrac_telemetry.services'\n"
+        "sh -c 'MYSQL_PWD=\"$MYSQL_PASSWORD\" mysql -u\"$MYSQL_USER\" "
+        "\"$MYSQL_DATABASE\" -e \"SELECT * FROM services\"'\n"
         "  2. Check idrac-telemetry-receiver logs\n"
     ),
 
@@ -358,7 +393,7 @@ TEST_ASSERT_MSGS = {
         "HOW TO FIX:\n"
         "  1. Verify OME Kafka forwarder status: Connected\n"
         "  2. Check OME Transfer Status shows recent activity\n"
-        "  3. curl http://<bridge-ip>:8080/topics to list topics\n"
+        "  3. curl -k https://<bridge-ip>:8080/topics to list topics\n"
     ),
 
     # Cleanup - General
@@ -366,6 +401,12 @@ TEST_ASSERT_MSGS = {
         "{count} pod(s) still running after cleanup\n"
         "HOW TO FIX:\n"
         "  1. kubectl get pods -n telemetry\n"
+        "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup\n"
+    ),
+    "cleanup_topics_remaining": (
+        "{count} Kafka topic(s) still present after cleanup\n"
+        "HOW TO FIX:\n"
+        "  1. kubectl get kafkatopic -n telemetry\n"
         "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup\n"
     ),
 
@@ -388,25 +429,12 @@ TEST_ASSERT_MSGS = {
         "  1. kubectl get pods -n telemetry -l app=vector-ome\n"
         "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup_ome\n"
     ),
-    "ufm_not_cleaned": (
-        "UFM resources still present after cleanup\n"
-        "HOW TO FIX:\n"
-        "  1. kubectl get svc,vmservicescrape,secret -n telemetry | grep ufm\n"
-        "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup_ufm\n"
-    ),
     "vast_not_cleaned": (
         "VAST resources still present after cleanup\n"
         "HOW TO FIX:\n"
         "  1. kubectl get svc,vmservicescrape,secret -n telemetry | grep vast\n"
         "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup_vast\n"
     ),
-    "sfm_not_cleaned": (
-        "{count} SFM pod(s) still present after cleanup\n"
-        "HOW TO FIX:\n"
-        "  1. kubectl get pods -n telemetry | grep sfm\n"
-        "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup_sfm\n"
-    ),
-
     # Cleanup - Sinks
     "kafka_not_cleaned": (
         "{count} Kafka pod(s) still present after cleanup\n"
@@ -438,7 +466,16 @@ TEST_ASSERT_MSGS = {
         "{count} PVC(s) still present in telemetry namespace\n"
         "HOW TO FIX:\n"
         "  1. kubectl get pvc -n telemetry\n"
-        "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup\n"
+        "  2. Re-run cleanup with Delete_volume=true:\n"
+        "     ansible-playbook telemetry.yml --tags cleanup -e Delete_volume=true\n"
+    ),
+    "pvcs_not_preserved": (
+        "PVCs were unexpectedly deleted (Delete_volume=false)\n"
+        "Cleanup without Delete_volume=true should preserve PVCs.\n"
+        "HOW TO FIX:\n"
+        "  1. Verify cleanup was run without -e Delete_volume=true\n"
+        "  2. Check cleanup role logic for unconditional PVC deletion\n"
+        "  3. Re-deploy and re-run cleanup without Delete_volume flag\n"
     ),
 
     # Idempotency
@@ -449,31 +486,62 @@ TEST_ASSERT_MSGS = {
         "  2. Ensure tasks use proper idempotency guards\n"
     ),
 
-    # UFM
-    "ufm_svc_missing": (
-        "UFM external service '{service}' not found\n"
+    # Resilience - Pod Recovery
+    "pod_recovery_failed": (
+        "Pod '{prefix}' did not recover after deletion: {error}\n"
         "HOW TO FIX:\n"
-        "  1. kubectl get svc -n telemetry | grep ufm\n"
-        "  2. Re-run telemetry deploy with UFM enabled\n"
+        "  1. kubectl get pods -n telemetry | grep {prefix}\n"
+        "  2. kubectl describe pod <pod-name> -n telemetry\n"
+        "  3. Check controller (Deployment/StatefulSet) events\n"
     ),
-    "ufm_vmscrape_missing": (
-        "UFM VMServiceScrape '{name}' not found\n"
+    "sts_recovery_failed": (
+        "StatefulSet storage pod recovery failed:\n{details}\n"
         "HOW TO FIX:\n"
-        "  1. kubectl get vmservicescrape -n telemetry | grep ufm\n"
-        "  2. Re-run telemetry deploy with UFM enabled\n"
+        "  1. kubectl get sts -n telemetry\n"
+        "  2. kubectl describe sts <sts-name> -n telemetry\n"
+        "  3. Check PVC binding: kubectl get pvc -n telemetry\n"
     ),
-    "ufm_secret_missing": (
-        "UFM credentials secret '{secret}' not found\n"
+    "pvcs_not_bound": (
+        "{not_bound} PVC(s) not in Bound state: {names}\n"
         "HOW TO FIX:\n"
-        "  1. kubectl get secret -n telemetry | grep ufm\n"
-        "  2. Re-run telemetry deploy with UFM credentials\n"
+        "  1. kubectl get pvc -n telemetry\n"
+        "  2. kubectl describe pvc <pvc-name> -n telemetry\n"
+        "  3. Check storage provisioner and PV availability\n"
     ),
-    "ufm_metrics_missing": (
-        "UFM metrics not found in VictoriaMetrics: {missing}\n"
+    "services_unavailable": (
+        "Services missing endpoints: {unavailable}\n"
         "HOW TO FIX:\n"
-        "  1. Check vmagent scrape targets for UFM\n"
-        "  2. Verify UFM endpoint is reachable: curl -sk https://<ufm-ip>:9001/metrics\n"
-        "  3. Check vmagent logs: kubectl logs -n telemetry <vmagent-pod>\n"
+        "  1. kubectl get endpoints -n telemetry\n"
+        "  2. Verify backing pods are Running: kubectl get pods -n telemetry\n"
+        "  3. Check service selector matches pod labels\n"
+    ),
+    "data_not_queryable": (
+        "VictoriaMetrics query '{query}' returned no data: {error}\n"
+        "HOW TO FIX:\n"
+        "  1. Check vmselect pod is Running: kubectl get pods -n telemetry | grep vmselect\n"
+        "  2. Check vmstorage: kubectl get pods -n telemetry | grep vmstorage\n"
+        "  3. Verify data was persisted: check PVC content\n"
+    ),
+    "node_reboot_failed": (
+        "After node reboot: {running}/{total} pods Running\n{details}\n"
+        "HOW TO FIX:\n"
+        "  1. kubectl get pods -n telemetry\n"
+        "  2. kubectl describe pods -n telemetry | grep -A5 'not ready'\n"
+        "  3. Check node status: kubectl get nodes\n"
+    ),
+    "lifecycle_failed": (
+        "Full lifecycle failed: {running}/{total} pods Running after redeploy\n"
+        "HOW TO FIX:\n"
+        "  1. Check deploy playbook output for errors\n"
+        "  2. kubectl get pods -n telemetry\n"
+        "  3. Re-run: ansible-playbook telemetry.yml --tags execute\n"
+    ),
+    "operator_recovery_failed": (
+        "Operator recovery failed:\n{details}\n"
+        "HOW TO FIX:\n"
+        "  1. kubectl get pods -n telemetry | grep operator\n"
+        "  2. kubectl logs <operator-pod> -n telemetry\n"
+        "  3. Check CR status: kubectl get vmcluster,kafka -n telemetry\n"
     ),
 
     # PowerScale
@@ -648,19 +716,30 @@ TEST_ASSERT_MSGS = {
         "  2. Re-run telemetry deploy with VAST credentials\n"
     ),
     "vast_metrics_missing": (
-        "VAST metrics not found in VictoriaMetrics: {missing}\n"
+        "VAST metrics pipeline verification failed: {error}\n"
         "HOW TO FIX:\n"
         "  1. Check vmagent scrape targets for VAST\n"
         "  2. Verify VAST endpoint is reachable: "
         "curl -sk https://<vast-ip>:443/api/prometheusmetrics/all\n"
         "  3. Check vmagent logs: kubectl logs -n telemetry <vmagent-pod>\n"
     ),
-    "vast_logs_missing": (
-        "No VAST logs found in VictoriaLogs\n"
+    "vast_syslog_configuration_failed": (
+        "VAST syslog configuration failed: {error}\n"
         "HOW TO FIX:\n"
-        "  1. Check VAST syslog config in VAST UI: Settings > Notifications > Syslog Setup\n"
-        "  2. Verify VLAgent is listening: kubectl get svc vlagent-vlagent -n telemetry\n"
-        "  3. Check VLAgent logs: kubectl logs vlagent-vlagent-0 -n telemetry\n"
+        "  1. Confirm vast_endpoint and TLS settings in telemetry_config.yml\n"
+        "  2. Run ./setup_env.sh --set-domain-creds on the execution OIM\n"
+        "  3. Confirm VAST default notification actions and VMS syslog audit "
+        "are enabled\n"
+        "  4. Verify the vlagent-vlagent LoadBalancer service is available\n"
+    ),
+    "vast_logs_missing": (
+        "VAST logs verification failed: {error}\n"
+        "HOW TO FIX:\n"
+        "  1. Verify the preceding VAST syslog configuration case passed\n"
+        "  2. Check VAST Settings > Notifications > Syslog Setup\n"
+        "  3. Verify VLAgent: kubectl get svc vlagent-vlagent -n telemetry\n"
+        "  4. Check VLAgent logs: kubectl logs vlagent-vlagent-0 "
+        "-n telemetry\n"
     ),
 
     # Online/Offline Mode
@@ -679,7 +758,7 @@ TEST_ASSERT_MSGS = {
         "  1. Check LDMS sampler running on compute nodes: systemctl status ldmsd\n"
         "  2. Check LDMS aggregator logs: kubectl logs nersc-ldms-aggr-0 -n telemetry\n"
         "  3. Check LDMS store logs: kubectl logs nersc-ldms-store-0 -n telemetry\n"
-        "  4. Verify Kafka ldms topic has data: curl http://<bridge>:8080/topics\n"
+        "  4. Verify Kafka ldms topic has data: curl -k https://<bridge>:8080/topics\n"
     ),
     "ldms_plugins_missing": (
         "LDMS plugins missing for host {hostname}: {plugins}\n"

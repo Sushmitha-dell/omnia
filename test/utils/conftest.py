@@ -26,6 +26,7 @@ Provides:
 
 import sys
 import os
+from datetime import datetime
 
 import pytest
 
@@ -113,6 +114,12 @@ def pytest_configure(config):
         "collect": "Log collector tests",
         "pxe": "PXE boot tests",
         "install_os": "OS installation tests",
+        "backup_oim_logs": "OIM log backup tests",
+        "cleanup_backup_oim_logs": "OIM log backup cleanup tests",
+        "slurm_config_util": "Slurm config backup/cleanup/rollback tests",
+        "cleanup_slurm_config_backups": "Slurm config backup cleanup tests",
+        "destructive": "Deletes live state (e.g. the active Slurm config share). "
+                        "Opt-in only: excluded unless explicitly selected via --marker destructive",
     }
     for name, desc in markers.items():
         config.addinivalue_line("markers", f"{name}: {desc}")
@@ -140,39 +147,52 @@ def _item_has_marker(item, marker_name):
 
 
 def pytest_collection_modifyitems(session, config, items):
-    """Filter by --marker expression and sort by order marker."""
+    """Filter by --marker expression and sort by order marker.
+
+    Tests that don't match the marker expression are DESELECTED (not run at all),
+    not skipped. This ensures only relevant tests appear in the report.
+
+    After filtering, tests are sorted by their @pytest.mark.order(n) value.
+    Tests without an order marker default to 999 (run last).
+    """
     marker_expr = config.getoption("--marker", default="")
     mode, markers = _parse_marker_expression(marker_expr)
 
-    if mode != "none" and markers:
-        filtered = []
+    # Step 0: Destructive tests (e.g. those that delete a live/shared config)
+    # are opt-in only. Deselect them unless explicitly requested via
+    # --marker destructive (alone or combined, e.g. slurm_config_util+destructive).
+    if "destructive" not in markers:
+        selected, deselected = [], []
         for item in items:
-            if mode == "and":
-                if all(_item_has_marker(item, m) for m in markers):
-                    filtered.append(item)
-                else:
-                    item.add_marker(pytest.mark.skip(
-                        reason=f"Missing marker(s) for AND expression: {'+'.join(markers)}"
-                    ))
-                    filtered.append(item)
-            elif mode == "or":
-                if any(_item_has_marker(item, m) for m in markers):
-                    filtered.append(item)
-                else:
-                    item.add_marker(pytest.mark.skip(
-                        reason=f"No matching marker for OR expression: {','.join(markers)}"
-                    ))
-                    filtered.append(item)
-            elif mode == "single":
-                if _item_has_marker(item, markers[0]):
-                    filtered.append(item)
-                else:
-                    item.add_marker(pytest.mark.skip(
-                        reason=f"Missing marker: {markers[0]}"
-                    ))
-                    filtered.append(item)
-        items[:] = filtered
+            (deselected if _item_has_marker(item, "destructive") else selected).append(item)
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
 
+    # Step 1: Filter by marker expression
+    if mode != "none" and markers:
+        selected = []
+        deselected = []
+        for item in items:
+            matches = False
+            if mode == "and":
+                matches = all(_item_has_marker(item, m) for m in markers)
+            elif mode == "or":
+                matches = any(_item_has_marker(item, m) for m in markers)
+            elif mode == "single":
+                matches = _item_has_marker(item, markers[0])
+
+            if matches:
+                selected.append(item)
+            else:
+                deselected.append(item)
+
+        # Report deselected items to pytest
+        if deselected:
+            config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
+
+    # Step 2: Sort by order marker (always applied, even without filtering)
     def _get_order(item):
         marker = item.get_closest_marker("order")
         if marker and marker.args:
@@ -247,13 +267,13 @@ def pytest_sessionstart(session):
             log(f"Input sync failed: {sync_result['error']}", "ERROR")
 
     # Sync install_os credentials (if applicable)
-        install_os_cred_result = sync_install_os_credentials(host)
-        if install_os_cred_result["success"]:
-            if install_os_cred_result["details"]:
-                level = "WARN" if "skipping sync" in install_os_cred_result["details"] else "OK"
-                log(install_os_cred_result["details"], level)
-        else:
-            log(f"Install OS credential sync failed: {install_os_cred_result['error']}", "WARN")
+    install_os_cred_result = sync_install_os_credentials(host)
+    if install_os_cred_result["success"]:
+        if install_os_cred_result["details"]:
+            level = "WARN" if "skipping sync" in install_os_cred_result["details"] else "OK"
+            log(install_os_cred_result["details"], level)
+    else:
+        log(f"Install OS credential sync failed: {install_os_cred_result['error']}", "WARN")
 
     # Initialize test report
     valid_scenarios = {"utils", "collect", "install_os", "precheck"}
@@ -265,13 +285,17 @@ def pytest_sessionstart(session):
                 module_name = part
                 break
 
-    report_id = os.environ.get("REPORT_ID")
+    configured_id = str(config.get("run_id") or "").strip()
+    run_id = configured_id or datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.environ["RUN_ID"] = run_id
+    base_name = str(config.get("report_name", "test_report"))
+    report_name = f"utils_{base_name}"
     report = TestReport(
         module_name=module_name,
         report_path=str(config.get("report_path", "/opt/omnia/reports")),
-        report_name=str(config.get("report_name", "test_report")),
+        report_name=report_name,
         server_ip=str(config.get("oim_server_ip", "localhost")),
-        report_id=report_id,
+        run_id=run_id,
     )
     set_current_report(report)
 

@@ -14,7 +14,8 @@
 ---
 
 # Provision Custom — Register user-defined FGs, configure BSS/metadata-service
-# Can be run standalone (after provision_preamble.yml) or imported by orchestrator.yml
+# Imported after provision_preamble.yml in the same canonical Ansible run.
+# Direct execution requires all setup and preamble facts to be supplied.
 #
 # This playbook catches all functional groups that do not match any known
 # category pattern (kubernetes, slurm, login, os). Users can extend this
@@ -31,7 +32,7 @@
   pre_tasks:
     - name: Load orchestrator state
       ansible.builtin.include_vars:
-        file: "{{ hostvars['localhost']['orchestrator_output_dir'] | default('/opt/omnia/.data') }}/orchestrator_state.yml"
+        file: "{{ hostvars['localhost']['orchestrator_output_dir'] }}/orchestrator_state.yml"
 
     - name: Load functional groups configuration
       ansible.builtin.include_vars:

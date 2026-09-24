@@ -25,31 +25,36 @@ This is critical because:
   - Cleanup tasks must handle missing resources gracefully
 
 Test cases:
-    NFT_TL_004: Deploy idempotency (second run exits 0)
-    NFT_TL_005: Cleanup idempotency (second run exits 0)
+    TEL_NFT_004: Deploy idempotency (second run exits 0)
+    TEL_NFT_005: Cleanup idempotency (second run exits 0)
+    TEL_NFT_015: Verify no pods after idempotent cleanup
+    TEL_NFT_016: Verify no PVCs after idempotent cleanup
+    TEL_NFT_017: Verify PVCs preserved after idempotent cleanup
 """
 
 import pytest
-
-from omnia_auto import TestLogger, run_playbook
-
-from library.vars.test_case_vars import TEST_CASES as TC
-from library.vars.common_vars import PLAYBOOK_ENTRY_POINT, PLAYBOOK_WORKDIR
-from library.messages.telemetry_msgs import (
-    TEST_LOG_MSGS as LOG_MSGS,
-    TEST_ASSERT_MSGS as ASSERT_MSGS,
-)
 from library.functions.cleanup_func import (
     verify_no_pods_remaining,
-    verify_no_pvcs_remaining,
+    verify_pvcs_preserved,
+    verify_source_pvcs_deleted,
+    verify_sink_pvcs_deleted,
 )
+from library.messages.telemetry_msgs import (
+    TEST_ASSERT_MSGS as ASSERT_MSGS,
+)
+from library.messages.telemetry_msgs import (
+    TEST_LOG_MSGS as LOG_MSGS,
+)
+from library.vars.common_vars import PLAYBOOK_ENTRY_POINT, PLAYBOOK_WORKDIR
+from library.vars.test_case_vars import TEST_CASES as TC
+from omnia_auto import TestLogger, run_playbook
 
 
 @pytest.mark.nft
 @pytest.mark.idempotency
 @pytest.mark.order(110)
 def test_deploy_idempotency(host):
-    """NFT_TL_004: Deploy idempotency — second run exits 0.
+    """TEL_NFT_004: Deploy idempotency — second run exits 0.
 
     Runs the full deploy playbook twice in sequence:
       1. First run: deploys telemetry infrastructure (sinks + sources).
@@ -117,8 +122,8 @@ def test_deploy_idempotency(host):
 @pytest.mark.nft
 @pytest.mark.idempotency
 @pytest.mark.order(111)
-def test_cleanup_idempotency(host):
-    """NFT_TL_005: Cleanup idempotency — second run exits 0.
+def test_cleanup_idempotency(host, delete_sinks_volume):
+    """TEL_NFT_005: Cleanup idempotency — second run exits 0.
 
     Runs the full cleanup playbook twice in sequence:
       1. First run: cleans up telemetry resources (may or may not find any).
@@ -126,9 +131,15 @@ def test_cleanup_idempotency(host):
 
     This validates that all cleanup tasks handle missing resources
     gracefully (--ignore-not-found, failed_when: false, helm guards).
+
+    The ``delete_sinks_volume`` fixture controls whether
+    ``Delete_sinks_volume=true`` is passed, matching the production cleanup
+    invocation.
     """
     tc = TC["nft_cleanup_idempotent"]
     tl = TestLogger(tc["title"], tc["id"])
+
+    extra_vars = {"Delete_sinks_volume": "true"} if delete_sinks_volume else None
 
     # -- Run 1: Initial cleanup -------------------------------------------
     tl.check("Running first cleanup (initial cleanup)")
@@ -136,6 +147,7 @@ def test_cleanup_idempotency(host):
         playbook=PLAYBOOK_ENTRY_POINT,
         playbook_workdir=PLAYBOOK_WORKDIR,
         tag="cleanup",
+        extra_vars=extra_vars,
     )
 
     if run1["rc"] != 0:
@@ -157,6 +169,7 @@ def test_cleanup_idempotency(host):
         playbook=PLAYBOOK_ENTRY_POINT,
         playbook_workdir=PLAYBOOK_WORKDIR,
         tag="cleanup",
+        extra_vars=extra_vars,
     )
 
     if run2["rc"] == 0:
@@ -186,16 +199,13 @@ def test_cleanup_idempotency(host):
 @pytest.mark.idempotency
 @pytest.mark.order(112)
 def test_cleanup_idempotency_no_pods(host):
-    """NFT_TL_005b: Verify no pods after idempotent cleanup.
+    """TEL_NFT_015: Verify no pods after idempotent cleanup.
 
     After two cleanup runs, the telemetry namespace must still have
     zero pods — the second run must not re-create any resources.
     """
-    tc = TC["no_pods_after_full_cleanup"]
-    tl = TestLogger(
-        "Verify no pods after idempotent cleanup",
-        tc["id"] + "-idem",
-    )
+    tc = TC["nft_cleanup_no_pods"]
+    tl = TestLogger(tc["title"], tc["id"])
 
     result = verify_no_pods_remaining(host)
 
@@ -215,28 +225,57 @@ def test_cleanup_idempotency_no_pods(host):
 @pytest.mark.nft
 @pytest.mark.idempotency
 @pytest.mark.order(113)
-def test_cleanup_idempotency_no_pvcs(host):
-    """NFT_TL_005c: Verify no PVCs after idempotent cleanup.
+def test_cleanup_idempotency_no_pvcs(host, delete_sinks_volume):
+    """TEL_NFT_016/TEL_NFT_017: Verify PVC state after idempotent cleanup.
 
-    After two cleanup runs, the telemetry namespace must still have
-    zero PVCs — the second run must not re-create any resources.
+    After two cleanup runs:
+      - With delete_sinks_volume=true: zero PVCs must remain (all deleted).
+      - With delete_sinks_volume=false: sink PVCs must be preserved and
+        source PVCs must be deleted.
     """
-    tc = TC["no_pvcs_after_full_cleanup"]
-    tl = TestLogger(
-        "Verify no PVCs after idempotent cleanup",
-        tc["id"] + "-idem",
+    case_key = (
+        "nft_cleanup_no_pvcs"
+        if delete_sinks_volume
+        else "nft_cleanup_pvcs_preserved"
     )
+    tc = TC[case_key]
+    tl = TestLogger(tc["title"], tc["id"])
 
-    result = verify_no_pvcs_remaining(host)
-
-    if result["success"]:
-        tl.passed(LOG_MSGS["no_pvcs_remaining"], result["details"])
-    else:
+    tl.check("Verifying source PVCs were deleted after idempotent cleanup")
+    result_source = verify_source_pvcs_deleted(host)
+    if not result_source["success"]:
         tl.failed(
-            LOG_MSGS["pvcs_remaining"].format(count=result["count"]),
-            result["details"],
+            LOG_MSGS["pvcs_remaining"].format(count=result_source["count"]),
+            result_source["details"],
         )
-
-    assert result["success"], ASSERT_MSGS["pvcs_remaining"].format(
-        count=result["count"],
+    assert result_source["success"], (
+        f"Source PVCs were not deleted: {result_source['error']}"
     )
+
+    if delete_sinks_volume:
+        tl.check("Verifying sink PVCs were deleted after idempotent cleanup")
+        result_sink = verify_sink_pvcs_deleted(host)
+        if result_sink["success"]:
+            tl.passed(
+                LOG_MSGS["no_pvcs_remaining"],
+                f"{result_source['details']}\n{result_sink['details']}",
+            )
+        else:
+            tl.failed(
+                LOG_MSGS["pvcs_remaining"].format(count=result_sink["count"]),
+                result_sink["details"],
+            )
+        assert result_sink["success"], (
+            f"Sink PVCs were not deleted: {result_sink['error']}"
+        )
+    else:
+        tl.check("Verifying sink PVCs were preserved after idempotent cleanup")
+        result = verify_pvcs_preserved(host)
+        if result["success"]:
+            tl.passed(LOG_MSGS["pvcs_preserved"], result["details"])
+        else:
+            tl.failed(
+                LOG_MSGS["pvcs_not_preserved"],
+                result["details"],
+            )
+        assert result["success"], ASSERT_MSGS["pvcs_not_preserved"]

@@ -6,13 +6,13 @@
 """
 Repo Manager — Catalog Negative test cases for error scenarios.
 
-TC_RM_CAT_NEG_001: Verify catalog_generate fails with missing input file
-TC_RM_CAT_NEG_002: Verify catalog_add fails with missing input file
-TC_RM_CAT_NEG_003: Verify catalog_delete fails with missing input file
-TC_RM_CAT_NEG_004: Verify catalog input file validation
-TC_RM_CAT_NEG_005: Verify catalog structure validation
-TC_RM_CAT_NEG_006: Verify catalog file existence validation
-TC_RM_CAT_NEG_007: Verify catalog log file validation
+RM_FVT_CATALOG_NEG_001: Verify catalog_generate fails with missing input file
+RM_FVT_CATALOG_NEG_002: Verify catalog_add fails with missing input file
+RM_FVT_CATALOG_NEG_003: Verify catalog_delete fails with missing input file
+RM_FVT_CATALOG_NEG_004: Verify catalog input file validation
+RM_FVT_CATALOG_NEG_005: Verify catalog structure validation
+RM_FVT_CATALOG_NEG_006: Verify catalog file existence validation
+RM_FVT_CATALOG_NEG_007: Verify catalog log file validation
 """
 
 import pytest
@@ -24,6 +24,7 @@ from library.functions import (
     check_catalog_structure,
     check_catalog_log_file_exists,
 )
+from library.vars.common_vars import _get_input_path
 from library.messages import (
     TEST_NAMES,
 )
@@ -32,13 +33,12 @@ from library.messages import (
 @pytest.mark.negative
 @pytest.mark.order(1)
 def test_catalog_generate_missing_input_file(host):
-    """TC_RM_CAT_NEG_001: Verify catalog_generate fails with missing input file."""
-    tl = TestLogger(TEST_NAMES["catalog_generate_deploy"], "TC_RM_CAT_NEG_001")
+    """RM_FVT_CATALOG_NEG_001: Verify catalog_generate fails with missing input file."""
+    tl = TestLogger(TEST_NAMES["catalog_generate_deploy"], "RM_FVT_CATALOG_NEG_001")
 
     # Check that a non-existent input file is detected
-    non_existent_file = (
-        "/opt/omnia/repo_manager/input/project_default/nonexistent.txt"
-    )
+    input_path = _get_input_path()
+    non_existent_file = f"{input_path}/nonexistent.txt"
     result = host.run(f"test -f {non_existent_file} && echo 'exists' || echo 'missing'")
 
     if "missing" in result.stdout:
@@ -53,13 +53,12 @@ def test_catalog_generate_missing_input_file(host):
 @pytest.mark.negative
 @pytest.mark.order(2)
 def test_catalog_add_missing_input_file(host):
-    """TC_RM_CAT_NEG_002: Verify catalog_add fails with missing input file."""
-    tl = TestLogger(TEST_NAMES["catalog_add_deploy"], "TC_RM_CAT_NEG_002")
+    """RM_FVT_CATALOG_NEG_002: Verify catalog_add fails with missing input file."""
+    tl = TestLogger(TEST_NAMES["catalog_add_deploy"], "RM_FVT_CATALOG_NEG_002")
 
     # Check that a non-existent input file is detected
-    non_existent_file = (
-        "/opt/omnia/repo_manager/input/project_default/nonexistent_add.txt"
-    )
+    input_path = _get_input_path()
+    non_existent_file = f"{input_path}/nonexistent_add.txt"
     result = host.run(f"test -f {non_existent_file} && echo 'exists' || echo 'missing'")
 
     if "missing" in result.stdout:
@@ -74,13 +73,12 @@ def test_catalog_add_missing_input_file(host):
 @pytest.mark.negative
 @pytest.mark.order(3)
 def test_catalog_delete_missing_input_file(host):
-    """TC_RM_CAT_NEG_003: Verify catalog_delete fails with missing input file."""
-    tl = TestLogger(TEST_NAMES["catalog_delete_deploy"], "TC_RM_CAT_NEG_003")
+    """RM_FVT_CATALOG_NEG_003: Verify catalog_delete fails with missing input file."""
+    tl = TestLogger(TEST_NAMES["catalog_delete_deploy"], "RM_FVT_CATALOG_NEG_003")
 
     # Check that a non-existent input file is detected
-    non_existent_file = (
-        "/opt/omnia/repo_manager/input/project_default/nonexistent_delete.txt"
-    )
+    input_path = _get_input_path()
+    non_existent_file = f"{input_path}/nonexistent_delete.txt"
     result = host.run(f"test -f {non_existent_file} && echo 'exists' || echo 'missing'")
 
     if "missing" in result.stdout:
@@ -95,8 +93,8 @@ def test_catalog_delete_missing_input_file(host):
 @pytest.mark.negative
 @pytest.mark.order(4)
 def test_catalog_input_directory_validation(host):
-    """TC_RM_CAT_NEG_004: Verify catalog input directory validation."""
-    tl = TestLogger(TEST_NAMES["catalog_input_dir_exists"], "TC_RM_CAT_NEG_004")
+    """RM_FVT_CATALOG_NEG_004: Verify catalog input directory validation."""
+    tl = TestLogger(TEST_NAMES["catalog_input_dir_exists"], "RM_FVT_CATALOG_NEG_004")
 
     # Check that input directory validation works
     result = check_catalog_input_file_exists(host)
@@ -112,8 +110,8 @@ def test_catalog_input_directory_validation(host):
 @pytest.mark.negative
 @pytest.mark.order(5)
 def test_catalog_structure_validation(host):
-    """TC_RM_CAT_NEG_005: Verify catalog structure validation."""
-    tl = TestLogger(TEST_NAMES["catalog_structure_valid"], "TC_RM_CAT_NEG_005")
+    """RM_FVT_CATALOG_NEG_005: Verify catalog structure validation."""
+    tl = TestLogger(TEST_NAMES["catalog_structure_valid"], "RM_FVT_CATALOG_NEG_005")
 
     # Check that catalog structure validation works
     result = check_catalog_structure(host)
@@ -128,8 +126,8 @@ def test_catalog_structure_validation(host):
 @pytest.mark.negative
 @pytest.mark.order(6)
 def test_catalog_file_existence_validation(host):
-    """TC_RM_CAT_NEG_006: Verify catalog file existence validation."""
-    tl = TestLogger(TEST_NAMES["catalog_file_exists"], "TC_RM_CAT_NEG_006")
+    """RM_FVT_CATALOG_NEG_006: Verify catalog file existence validation."""
+    tl = TestLogger(TEST_NAMES["catalog_file_exists"], "RM_FVT_CATALOG_NEG_006")
 
     # Check that catalog file existence validation works
     result = check_catalog_file_exists(host)
@@ -145,8 +143,8 @@ def test_catalog_file_existence_validation(host):
 @pytest.mark.negative
 @pytest.mark.order(7)
 def test_catalog_log_file_validation(host):
-    """TC_RM_CAT_NEG_007: Verify catalog log file validation."""
-    tl = TestLogger(TEST_NAMES["catalog_log_file_exists"], "TC_RM_CAT_NEG_007")
+    """RM_FVT_CATALOG_NEG_007: Verify catalog log file validation."""
+    tl = TestLogger(TEST_NAMES["catalog_log_file_exists"], "RM_FVT_CATALOG_NEG_007")
 
     # Check that catalog log file validation works
     result = check_catalog_log_file_exists(host)

@@ -16,8 +16,15 @@
 Telemetry Cleanup — Verification Tests.
 
 Test cases:
-    TC_CL_002: Verify telemetry pods removed after cleanup
-    TC_CL_003: Verify Kafka topics removed after cleanup
+    TEL_FVT_CLEANUP_V001: Verify telemetry pods removed after cleanup
+    TEL_FVT_CLEANUP_V002: Verify Kafka topics removed after cleanup
+        (delete_sinks_volume=true only)
+
+KafkaTopic CRDs are only deleted by the cleanup role when
+``delete_sinks_volume=true`` (see ``src/telemetry/roles/cleanup/tasks/kafka.yml``
+— "Kafka | Delete KafkaTopic CRDs"). With the default
+``delete_sinks_volume=false``, topic metadata is intentionally kept alongside
+the retained Kafka PVCs, so TEL_FVT_CLEANUP_V002 is skipped in that mode.
 """
 
 import pytest
@@ -37,7 +44,7 @@ from library.vars.common_vars import CMDS
 @pytest.mark.sanity
 @pytest.mark.order(1)
 def test_cleanup_pods_removed(host):
-    """TC_CL_002: Verify telemetry pods removed after cleanup."""
+    """TEL_FVT_CLEANUP_V001: Verify telemetry pods removed after cleanup."""
     tc = TC["cleanup_pods_removed"]
     tl = TestLogger(tc["title"], tc["id"])
 
@@ -70,8 +77,18 @@ def test_cleanup_pods_removed(host):
 
 @pytest.mark.sanity
 @pytest.mark.order(2)
-def test_cleanup_topics_removed(host):
-    """TC_CL_003: Verify Kafka topics removed after cleanup."""
+def test_cleanup_topics_removed(host, delete_sinks_volume):
+    """TEL_FVT_CLEANUP_V002: Verify topics removed when sink deletion is on.
+
+    Skipped when ``delete_sinks_volume=false`` (default) because KafkaTopic
+    CRDs are intentionally preserved alongside retained Kafka PVCs.
+    """
+    if not delete_sinks_volume:
+        pytest.skip(
+            "delete_sinks_volume=false — KafkaTopic CRDs are preserved "
+            "alongside retained PVCs; skipping topic deletion check"
+        )
+
     tc = TC["cleanup_topics_removed"]
     tl = TestLogger(tc["title"], tc["id"])
 
@@ -97,9 +114,6 @@ def test_cleanup_topics_removed(host):
             result.stdout.strip(),
         )
 
-    assert topic_count == 0, (
-        f"{topic_count} Kafka topic(s) still present after cleanup\n"
-        "HOW TO FIX:\n"
-        "  1. kubectl get kafkatopic -n telemetry\n"
-        "  2. Re-run cleanup: ansible-playbook telemetry.yml --tags cleanup\n"
+    assert topic_count == 0, ASSERT_MSGS["cleanup_topics_remaining"].format(
+        count=topic_count,
     )

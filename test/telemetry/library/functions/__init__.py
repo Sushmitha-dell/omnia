@@ -21,7 +21,13 @@ Module-specific functions live in separate files:
   - k8s_func.py         — K8s resource verification (all pods, deploys, sts)
   - powerscale_func.py  — PowerScale source verification
   - ufm_func.py         — UFM source verification
+  - vast_func.py        — VAST metrics, syslog, and log verification
+  - vast_api_func.py    — VAST notification API operations
   - ome_func.py         — OME Kafka connectivity verification
+  - ome_victoria_func.py — OME VictoriaMetrics/VictoriaLogs verification
+  - sfm_func.py         — SFM Prometheus Remote Write integration
+  - sfm_metrics_func.py — attributed SFM-to-VictoriaMetrics verification
+  - resilience_func.py  — NFT resilience (pod recovery, reboot, lifecycle)
   - validation_func.py  — config validation
 """
 
@@ -42,6 +48,8 @@ from omnia_auto import (
     TestReport,
     get_current_report,
     set_current_report,
+    build_report_name,
+    record_playbook_failure,
     run_playbook as _run_playbook,
 )
 from ..vars.common_vars import PLAYBOOK_ENTRY_POINT, PLAYBOOK_WORKDIR
@@ -53,6 +61,7 @@ from .telemetry_func import (
     is_source_enabled,
     is_logs_enabled,
     is_sink_enabled,
+    is_sink_enabled_for_source,
     load_telemetry_config_from_target,
     check_target_connectivity,
     check_env_vars_present,
@@ -63,6 +72,7 @@ from .telemetry_func import (
     get_vlselect_endpoint,
     verify_idrac_vm_data,
     get_idrac_service_tags,
+    get_kafka_external_bootstrap,
 )
 
 # --- K8s resource verification ---
@@ -89,10 +99,14 @@ from .idrac_func import (
 
 # --- OME verification ---
 from .ome_func import (
+    get_ome_pipeline_context,
     verify_ome_kafka_connectivity,
+    get_ome_kafka_forwarder_config,
+    configure_ome_kafka_and_wait,
     get_ome_forwarders,
     run_external_kafka_playbook,
     verify_external_kafka_certs,
+    verify_external_kafka_connection_details,
     convert_certs_to_pfx,
     verify_ome_kafka_user_cr,
     upload_ome_server_cert,
@@ -100,16 +114,46 @@ from .ome_func import (
     view_ome_client_cert,
     send_ome_kafka_test_connection,
     update_ome_forwarder_settings,
+    verify_ome_kafka_topics,
+    verify_ome_data_in_kafka,
+    compare_ome_cert_with_local,
 )
+from .ome_victoria_func import (
+    verify_ome_logs_in_victoria,
+    verify_ome_metrics_in_victoria,
+)
+
+# --- SFM verification and configuration ---
+from .sfm_func import (
+    configure_sfm_observability,
+    configure_sfm_switch,
+    verify_sfm_omnia_pods,
+    verify_sfm_omnia_services,
+)
+from .sfm_metrics_func import verify_sfm_metrics_in_victoria
 
 # --- VAST verification ---
 from .vast_func import (
-    verify_vast_external_service,
-    verify_vast_vmscrape,
-    verify_vast_credentials_secret,
-    verify_vast_metrics,
-    verify_vast_logs,
+    configure_vast_syslog_and_trigger,
     get_vast_endpoint_from_config,
+    verify_vast_external_service,
+    verify_vast_credentials_secret,
+    verify_fresh_vast_test_event,
+    verify_vast_metrics,
+    verify_vast_vmscrape,
+)
+
+# --- Resilience ---
+from .resilience_func import (
+    delete_pods_by_prefix,
+    wait_pods_ready_by_prefix,
+    verify_pod_recreation,
+    verify_all_pvcs_bound,
+    verify_service_endpoints_available,
+    verify_data_queryable_after_restart,
+    reboot_node_and_wait,
+    verify_pods_after_reboot,
+    verify_operator_recovery,
 )
 
 # --- Validation ---
@@ -147,6 +191,8 @@ __all__ = [
     "TestReport",
     "get_current_report",
     "set_current_report",
+    "build_report_name",
+    "record_playbook_failure",
     "run_playbook",
     # telemetry common
     "resolve_kube_vip_ip",
@@ -154,6 +200,7 @@ __all__ = [
     "is_source_enabled",
     "is_logs_enabled",
     "is_sink_enabled",
+    "is_sink_enabled_for_source",
     "load_telemetry_config_from_target",
     "check_target_connectivity",
     "check_env_vars_present",
@@ -164,6 +211,7 @@ __all__ = [
     "get_vlselect_endpoint",
     "verify_idrac_vm_data",
     "get_idrac_service_tags",
+    "get_kafka_external_bootstrap",
     # k8s
     "verify_all_pods_running",
     "verify_pods_by_prefix",
@@ -181,10 +229,14 @@ __all__ = [
     "verify_mysql_data_in_pods",
     "verify_receiver_collecting",
     # ome
+    "get_ome_pipeline_context",
     "verify_ome_kafka_connectivity",
+    "get_ome_kafka_forwarder_config",
+    "configure_ome_kafka_and_wait",
     "get_ome_forwarders",
     "run_external_kafka_playbook",
     "verify_external_kafka_certs",
+    "verify_external_kafka_connection_details",
     "convert_certs_to_pfx",
     "verify_ome_kafka_user_cr",
     "upload_ome_server_cert",
@@ -192,13 +244,35 @@ __all__ = [
     "view_ome_client_cert",
     "send_ome_kafka_test_connection",
     "update_ome_forwarder_settings",
+    "verify_ome_kafka_topics",
+    "verify_ome_data_in_kafka",
+    "compare_ome_cert_with_local",
+    "verify_ome_logs_in_victoria",
+    "verify_ome_metrics_in_victoria",
+    # sfm
+    "configure_sfm_observability",
+    "configure_sfm_switch",
+    "verify_sfm_omnia_pods",
+    "verify_sfm_omnia_services",
+    "verify_sfm_metrics_in_victoria",
     # vast
-    "verify_vast_external_service",
-    "verify_vast_vmscrape",
-    "verify_vast_credentials_secret",
-    "verify_vast_metrics",
-    "verify_vast_logs",
+    "configure_vast_syslog_and_trigger",
     "get_vast_endpoint_from_config",
+    "verify_vast_external_service",
+    "verify_vast_credentials_secret",
+    "verify_fresh_vast_test_event",
+    "verify_vast_metrics",
+    "verify_vast_vmscrape",
+    # resilience
+    "delete_pods_by_prefix",
+    "wait_pods_ready_by_prefix",
+    "verify_pod_recreation",
+    "verify_all_pvcs_bound",
+    "verify_service_endpoints_available",
+    "verify_data_queryable_after_restart",
+    "reboot_node_and_wait",
+    "verify_pods_after_reboot",
+    "verify_operator_recovery",
     # validation
     "validate_test_config",
     "validate_all",

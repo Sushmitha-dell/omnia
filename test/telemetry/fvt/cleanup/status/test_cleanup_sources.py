@@ -19,12 +19,12 @@ Verifies that each telemetry source's K8s resources have been removed
 after running the cleanup playbook.
 
 Test cases:
-    TC_CL_005: Verify cleanup_idrac removes iDRAC resources
-    TC_CL_006: Verify cleanup_ldms removes LDMS + Vector-LDMS
-    TC_CL_007: Verify cleanup_ome removes OME + Vector-OME
-    TC_CL_008: Verify cleanup_ufm removes UFM resources
-    TC_CL_009: Verify cleanup_vast removes VAST resources
-    TC_CL_010: Verify cleanup_sfm removes SFM resources
+    TEL_FVT_CLEANUP_V006: Verify cleanup_idrac removes iDRAC resources
+    TEL_FVT_CLEANUP_V007: Verify cleanup_ldms removes LDMS + Vector-LDMS
+    TEL_FVT_CLEANUP_V008: Verify cleanup_ome removes OME + Vector-OME
+    TEL_FVT_CLEANUP_V009: Verify cleanup_ufm removes UFM resources
+    TEL_FVT_CLEANUP_V010: Verify cleanup_vast removes VAST resources
+    TEL_FVT_CLEANUP_V011: Verify cleanup_sfm removes SFM resources
 """
 
 import pytest
@@ -35,6 +35,14 @@ from library.vars.test_case_vars import TEST_CASES as TC
 from library.messages.telemetry_msgs import (
     TEST_LOG_MSGS as LOG_MSGS,
     TEST_ASSERT_MSGS as ASSERT_MSGS,
+)
+from library.messages.sfm_msgs import (
+    SFM_ASSERT_MSGS,
+    SFM_LOG_MSGS,
+)
+from library.messages.ufm_msgs import (
+    UFM_ASSERT_MSGS,
+    UFM_LOG_MSGS,
 )
 from library.functions.cleanup_func import (
     verify_idrac_cleaned,
@@ -49,7 +57,7 @@ from library.functions.cleanup_func import (
 @pytest.mark.functional
 @pytest.mark.order(51)
 def test_cleanup_idrac(host):
-    """TC_CL_005: Verify iDRAC telemetry resources removed after cleanup."""
+    """TEL_FVT_CLEANUP_V006: Verify iDRAC telemetry resources removed after cleanup."""
     tc = TC["cleanup_idrac"]
     tl = TestLogger(tc["title"], tc["id"])
 
@@ -66,7 +74,7 @@ def test_cleanup_idrac(host):
 @pytest.mark.functional
 @pytest.mark.order(52)
 def test_cleanup_ldms(host):
-    """TC_CL_006: Verify LDMS + Vector-LDMS resources removed after cleanup."""
+    """TEL_FVT_CLEANUP_V007: Verify LDMS + Vector-LDMS resources removed after cleanup."""
     tc = TC["cleanup_ldms"]
     tl = TestLogger(tc["title"], tc["id"])
 
@@ -83,7 +91,7 @@ def test_cleanup_ldms(host):
 @pytest.mark.functional
 @pytest.mark.order(53)
 def test_cleanup_ome(host):
-    """TC_CL_007: Verify OME + Vector-OME resources removed after cleanup."""
+    """TEL_FVT_CLEANUP_V008: Verify OME + Vector-OME resources removed after cleanup."""
     tc = TC["cleanup_ome"]
     tl = TestLogger(tc["title"], tc["id"])
 
@@ -100,24 +108,24 @@ def test_cleanup_ome(host):
 @pytest.mark.functional
 @pytest.mark.order(54)
 def test_cleanup_ufm(host):
-    """TC_CL_008: Verify UFM telemetry resources removed after cleanup."""
+    """TEL_FVT_CLEANUP_V009: Verify UFM telemetry resources removed after cleanup."""
     tc = TC["cleanup_ufm"]
     tl = TestLogger(tc["title"], tc["id"])
 
     result = verify_ufm_cleaned(host)
 
     if result["success"]:
-        tl.passed(LOG_MSGS["ufm_cleaned"], result["details"])
+        tl.passed(UFM_LOG_MSGS["cleanup_complete"], result["details"])
     else:
-        tl.failed(LOG_MSGS["ufm_not_cleaned"], result["details"])
+        tl.failed(UFM_LOG_MSGS["cleanup_incomplete"], result["details"])
 
-    assert result["success"], ASSERT_MSGS["ufm_not_cleaned"]
+    assert result["success"], UFM_ASSERT_MSGS["cleanup_incomplete"]
 
 
 @pytest.mark.functional
 @pytest.mark.order(55)
 def test_cleanup_vast(host):
-    """TC_CL_009: Verify VAST telemetry resources removed after cleanup."""
+    """TEL_FVT_CLEANUP_V010: Verify VAST telemetry resources removed after cleanup."""
     tc = TC["cleanup_vast"]
     tl = TestLogger(tc["title"], tc["id"])
 
@@ -134,15 +142,15 @@ def test_cleanup_vast(host):
 @pytest.mark.functional
 @pytest.mark.order(56)
 def test_cleanup_sfm(host):
-    """TC_CL_010: Verify SFM telemetry resources removed after cleanup."""
+    """TEL_FVT_CLEANUP_V011: Verify SFM telemetry resources removed after cleanup."""
     tc = TC["cleanup_sfm"]
     tl = TestLogger(tc["title"], tc["id"])
 
     result = verify_sfm_cleaned(host)
 
     if result["success"]:
-        tl.passed(LOG_MSGS["sfm_cleaned"], result["details"])
+        tl.passed(SFM_LOG_MSGS["cleanup_complete"], result["details"])
     else:
-        tl.failed(LOG_MSGS["sfm_not_cleaned"], result["details"])
+        tl.failed(SFM_LOG_MSGS["cleanup_incomplete"], result["details"])
 
-    assert result["success"], ASSERT_MSGS["sfm_not_cleaned"]
+    assert result["success"], SFM_ASSERT_MSGS["cleanup_incomplete"]

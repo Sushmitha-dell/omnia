@@ -26,7 +26,7 @@
 #
 # Installation modes:
 #   - online:  Install from PyPI (pip install <package>==<version>)
-#   - offline: Install from Pulp repo (pip install --index-url <repo_url>/pip_module/ <package>==<version>)
+#   - offline: Install from a package-specific directory under <repo_url>/pip_module/
 #
 # Parameters:
 #   component: Component name to look up in telemetry_packages.yml (required)
@@ -60,19 +60,29 @@
 - name: Set installation mode variables from loaded telemetry_packages
   ansible.builtin.set_fact:
     install_mode: "{{ _telemetry_packages_raw.install_mode | default('offline') }}"
-    repo_url: "{{ _telemetry_packages_raw.repo_url | default('') }}"
+    repo_url: >-
+      {% set url = _telemetry_packages_raw.repo_url | default('') -%}
+      {% if url | length > 0 -%}
+      {{ url | regex_replace('/$', '') }}{%- elif _telemetry_packages_raw.install_mode | default('offline') == 'offline' -%}
+      {% set nic_ip = lookup('env', 'SYSTEM_ADMIN_NIC_IPV4') | default(admin_nic_ip | default(''), true) -%}
+      {% if nic_ip | length > 0 -%}
+      https://{{ nic_ip }}:{{ pulp_port }}/{{ pulp_base_path }}/{{ pulp_cluster_arch }}/{{ pulp_os_name }}/{{ pulp_os_version }}{%- endif -%}
+      {%- else -%}
+      {{ url }}{%- endif %}
     pip_modules: "{{ _telemetry_packages_raw.pip_modules | default({}) }}"
 
 - name: Validate repo_url is set for offline mode
   ansible.builtin.assert:
     that:
       - repo_url | length > 0
-    fail_msg: "repo_url must be set in telemetry_packages.yml when install_mode is 'offline'"
+    fail_msg: >
+      repo_url must be set in telemetry_packages.yml when install_mode is 'offline',
+      or SYSTEM_ADMIN_NIC_IPV4 must be set to auto-derive the Pulp URL.
   when: install_mode == "offline"
 
-- name: Build pip index URL from repo_url
+- name: Build pip module URL from repo_url
   ansible.builtin.set_fact:
-    pip_index_url: "{{ repo_url }}/pip_module/"
+    pip_module_url: "{{ repo_url }}/pip_module/"
   when: install_mode == "offline"
 
 - name: Get packages for component from telemetry_packages.yml
@@ -92,5 +102,6 @@
   ansible.builtin.include_tasks: install_single_python_package.yml
   vars:
     package_name: "{{ item.key }}"
+    package_distribution_name: "{{ telemetry_pip_distribution_names[item.key] | default(item.key) }}"
     package_version: "{{ item.value }}"
     component_name: "{{ component }}"

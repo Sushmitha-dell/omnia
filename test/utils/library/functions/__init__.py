@@ -62,6 +62,10 @@ from .host_func import (
     sync_install_os_credentials,
     get_utils_input_path,
     get_utils_output_path,
+    get_backup_oim_logs_output_path,
+    get_backup_oim_logs_config_path,
+    get_slurm_config_util_output_path,
+    get_slurm_config_util_config_path,
 )
 
 from .validation_func import (
@@ -69,16 +73,51 @@ from .validation_func import (
     ConfigValidationError,
 )
 
+from .cleanup_func import (
+    check_old_log_bundles_removed,
+    check_empty_log_dirs_removed,
+    check_temp_log_dirs_cleaned,
+    check_install_os_temp_dir_removed,
+    check_install_os_nfs_unmounted,
+    check_install_os_credentials_removed,
+    check_all_logs_cleaned,
+    check_all_install_os_cleaned,
+    check_setup_output_dir_exists,
+    check_setup_input_dir_exists,
+    check_utils_status_file_removed,
+    check_install_os_status_file_removed,
+)
+
+from .backup_func import (
+    validate_backup_config,
+    validate_backup_metadata_file,
+    check_backup_workspace_removed,
+)
+
+from .slurm_config_util_func import (
+    find_latest_backup_run_dir,
+    validate_slurm_backup_metadata_file,
+    check_backup_directories_present,
+    check_slurm_config_dir_removed,
+    check_backup_workspace_run_dirs_removed,
+)
+
 # --- Domain-specific vars ---
 from ..vars.common_vars import (
     PLAYBOOK_COLLECT,
     PLAYBOOK_INSTALL_OS,
+    PLAYBOOK_BACKUP_OIM_LOGS,
+    PLAYBOOK_SLURM_CONFIG_UTIL,
+    PLAYBOOK_CLEANUP_SLURM_CONFIG_BACKUPS,
     PLAYBOOK_WORKDIR,
 )
 
 
 def run_playbook(playbook=None, tag=None, **kwargs):
     """Run an Ansible playbook with domain-specific defaults.
+
+    The playbook uses OMNIA_DATA_PATH and OMNIA_PROJECT_NAME from the
+    target's environment (sourced from /etc/omnia/omnia.env).
 
     Args:
         playbook: Playbook filename (default: collect.yml).
@@ -133,6 +172,33 @@ __all__ = [
     "sync_install_os_credentials",
     "get_utils_input_path",
     "get_utils_output_path",
+    "get_backup_oim_logs_output_path",
+    "get_backup_oim_logs_config_path",
+    "get_slurm_config_util_output_path",
+    "get_slurm_config_util_config_path",
     "validate_all",
     "ConfigValidationError",
+    # Cleanup functions
+    "check_old_log_bundles_removed",
+    "check_empty_log_dirs_removed",
+    "check_temp_log_dirs_cleaned",
+    "check_install_os_temp_dir_removed",
+    "check_install_os_nfs_unmounted",
+    "check_install_os_credentials_removed",
+    "check_all_logs_cleaned",
+    "check_all_install_os_cleaned",
+    "check_setup_output_dir_exists",
+    "check_setup_input_dir_exists",
+    "check_utils_status_file_removed",
+    "check_install_os_status_file_removed",
+    # OIM log backup functions
+    "validate_backup_config",
+    "validate_backup_metadata_file",
+    "check_backup_workspace_removed",
+    # Slurm config util functions
+    "find_latest_backup_run_dir",
+    "validate_slurm_backup_metadata_file",
+    "check_backup_directories_present",
+    "check_slurm_config_dir_removed",
+    "check_backup_workspace_run_dirs_removed",
 ]

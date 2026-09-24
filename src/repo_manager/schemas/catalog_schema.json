@@ -31,7 +31,7 @@
           "type": "object",
           "minProperties": 1,
           "patternProperties": {
-            "^[a-zA-Z0-9_][a-zA-Z0-9_-]*$": { "$ref": "#/definitions/package" }
+            "^[a-zA-Z0-9_@][a-zA-Z0-9_.+/:=@~-]*$": { "$ref": "#/definitions/package" }
           },
           "additionalProperties": false
         }
@@ -82,9 +82,9 @@
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "packagetype": { 
-          "type": "string", 
-          "enum": ["rpm", "tarball", "image", "rpm_repo", "git", "manifest", "pip_module"] 
+        "packagetype": {
+          "type": "string",
+          "enum": ["rpm", "tarball", "image", "rpm_repo", "git", "manifest", "pip_module"]
         },
         "version": {
           "type": "string",

@@ -18,7 +18,7 @@
 #
 # Outputs:
 #   - orchestrator_inventory.yml (all nodes)
-#   - bmc_group_data.yml (all nodes)
+#   - bmc_group_data.csv (all nodes)
 
 - name: Load functional groups configuration
   ansible.builtin.include_vars:
@@ -27,24 +27,6 @@
 - name: Load classification rules
   ansible.builtin.include_vars:
     file: "{{ role_path }}/../../vars/functional_group_classification.yml"
-
-- name: Check if high_availability_config.yml exists
-  ansible.builtin.stat:
-    path: "{{ hostvars['localhost']['input_project_dir'] }}/high_availability_config.yml"
-  register: ha_config_stat
-  delegate_to: localhost
-
-- name: Load high_availability_config.yml to get kube_vip
-  ansible.builtin.include_vars:
-    file: "{{ hostvars['localhost']['input_project_dir'] }}/high_availability_config.yml"
-    name: ha_config
-  delegate_to: localhost
-  when: ha_config_stat.stat.exists | default(false)
-
-- name: Set kube_vip fact
-  ansible.builtin.set_fact:
-    kube_vip: "{{ ha_config.service_k8s_cluster_ha[0].virtual_ip_address | default('') }}"
-  when: ha_config_stat.stat.exists | default(false)
 
 # Inventory templates and output paths (from configure_ochami/vars/main.yml)
 - name: Set inventory variables
@@ -72,6 +54,48 @@
     mapping_nodes: "{{ hostvars['localhost']['read_mapping_file']['dict'] | dict2items }}"
     mapping_group_data: "{{ (lookup('file', hostvars['localhost']['functional_groups_config_path']) | from_yaml).groups }}"
 
+# K8s deployment validation - kube_vip is only added when ALL conditions are met:
+# 1. K8s functional groups (service_kube_*) are defined in PXE mapping file
+# 2. high_availability_config.yml exists with valid kube_vip configuration
+- name: Check if high_availability_config.yml exists
+  ansible.builtin.stat:
+    path: "{{ hostvars['localhost']['input_project_dir'] }}/high_availability_config.yml"
+  register: ha_config_stat
+  delegate_to: localhost
+
+- name: Check if Service K8s functional groups exist in mapping
+  ansible.builtin.set_fact:
+    k8s_groups_in_mapping: >-
+      {{
+        (mapping_nodes | map(attribute='value.FUNCTIONAL_GROUP_NAME') | list)
+        | select('match', '^service_kube_')
+        | list
+        | length > 0
+      }}
+
+- name: Load high_availability_config.yml to get kube_vip
+  ansible.builtin.include_vars:
+    file: "{{ hostvars['localhost']['input_project_dir'] }}/high_availability_config.yml"
+    name: ha_config
+  delegate_to: localhost
+  when:
+    - ha_config_stat.stat.exists | default(false)
+    - k8s_groups_in_mapping | default(false)
+
+- name: Set kube_vip fact
+  ansible.builtin.set_fact:
+    kube_vip: "{{ ha_config.service_k8s_cluster_ha[0].virtual_ip_address | default('') }}"
+  when:
+    - ha_config_stat.stat.exists | default(false)
+    - k8s_groups_in_mapping | default(false)
+
+# Ensure kube_vip is always defined so the template task vars block
+# does not self-reference an undefined variable (Jinja2 recursion error).
+- name: Default kube_vip if not set
+  ansible.builtin.set_fact:
+    kube_vip: ""
+  when: kube_vip is not defined
+
 - name: Generate BMC group data file
   ansible.builtin.template:
     src: "{{ ochami_template_dir }}/nodes/bmc_group_data.csv.j2"
@@ -89,20 +113,20 @@
 
 - name: Generate orchestrator inventory file
   ansible.builtin.template:
-    src: "{{ ochami_template_dir }}/nodes/orchestrator_inventory.yaml.j2"
-    dest: "{{ orchestrator_output_dir }}/orchestrator_inventory.yaml"
+    src: "{{ ochami_template_dir }}/nodes/orchestrator_inventory.yml.j2"
+    dest: "{{ orchestrator_output_dir }}/orchestrator_inventory.yml"
     mode: "{{ file_permissions_644 }}"
   vars:
     mapping_nodes_var: "{{ mapping_nodes }}"
-    kube_vip: "{{ kube_vip | default('') }}"
+    inventory_kube_vip: "{{ kube_vip | default('') }}"
 
 - name: Copy orchestrator inventory to localhost
   ansible.builtin.fetch:
-    src: "{{ orchestrator_output_dir }}/orchestrator_inventory.yaml"
-    dest: "{{ orchestrator_output_dir }}/orchestrator_inventory.yaml"
+    src: "{{ orchestrator_output_dir }}/orchestrator_inventory.yml"
+    dest: "{{ orchestrator_output_dir }}/orchestrator_inventory.yml"
     flat: true
 
 - name: Inventory generation complete
   ansible.builtin.debug:
     msg: >-
-      Generated inventories: orchestrator_inventory.yaml, bmc_group_data.csv
+      Generated inventories: orchestrator_inventory.yml, bmc_group_data.csv

@@ -60,16 +60,25 @@ echo -e "${GREEN}Installing dependencies...${NC}"
 pip install --upgrade pip -q
 pip install -r "${SCRIPT_DIR}/requirements.txt" -q
 
+# Provision vault key if not present
+if [ ! -f "${SCRIPT_DIR}/.test_creds.key" ]; then
+    echo -e "${GREEN}Provisioning Ansible Vault key...${NC}"
+    # Generate a random 32-character key
+    openssl rand -base64 24 > "${SCRIPT_DIR}/.test_creds.key"
+    chmod 600 "${SCRIPT_DIR}/.test_creds.key"
+    echo -e "${GREEN}Vault key provisioned at .test_creds.key${NC}"
+fi
+
 # Tab-completion for run_validation.sh
 # Usage: ./run_validation.sh discovery [tag] <command> [options]
 _run_validation_completions() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
     local prev="${COMP_WORDS[COMP_CWORD-1]}"
-    local domain="discovery"
-    local tags="validate discovery"
+    local domain="fvt_discovery nft_discovery ut_discovery"
+    local tags="precheck validate credentials execute discovery cleanup"
     local commands="exec verify test list help"
     local options="--suite --marker -v --verbose --debug --config"
-    local markers="sanity functional regression deploy"
+    local markers="sanity functional regression deploy nft"
 
     case "$COMP_CWORD" in
         1)
@@ -118,4 +127,6 @@ _run_validation_completions() {
 complete -F _run_validation_completions ./run_validation.sh
 
 echo -e "${GREEN}Environment ready. Tab-completion enabled.${NC}"
-echo -e "${GREEN}Run: ./run_validation.sh discovery [tag] <command>${NC}"
+echo -e "${GREEN}Run: ./run_validation.sh fvt_discovery [tag] <command>${NC}"
+echo -e "${GREEN}Run: ./run_validation.sh nft_discovery test${NC}"
+echo -e "${GREEN}Run: ./run_validation.sh ut_discovery test${NC}"
